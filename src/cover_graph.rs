@@ -40,15 +40,14 @@ impl CoverGraph {
             original_edge_points.push(original_graph.get_edge_points(i));
         }
         let preceding_cover_graph: Option<Weak<CoverGraph>> = None;
-        let degree = 0;
         let num_nodes = original_graph.get_num_nodes();
         let num_edges = original_graph.get_num_edges();
         let num_parameters = original_graph.get_num_parameters();
-        let cover_nodes = HashSet::new();
+        let mut cover_nodes = HashSet::new();
         for i in 0..num_nodes {
             cover_nodes.insert(i);
         }
-        let cover_edges = Vec::new();
+        let mut cover_edges = Vec::new();
         for i in 0..num_edges {
             cover_edges.push(CoverEdge {
                 nodes: vec![original_graph.get_edge_points(i).0, original_graph.get_edge_points(i).1],
