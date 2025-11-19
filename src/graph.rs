@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::hash::Hash;
 use std::io::{self, BufRead, BufReader, Error, ErrorKind};
 
 struct Edge {
@@ -23,7 +22,7 @@ pub struct Graph {
 
 impl Graph {
 
-    fn new(input_path: &str) -> io::Result<Self> {
+    pub fn new(input_path: &str) -> io::Result<Self> {
         let file = File::open(input_path).expect("Failed to open file");
         let mut reader = BufReader::new(file);
 
@@ -72,35 +71,35 @@ impl Graph {
         })
     }
 
-    fn get_num_nodes(&self) -> u32 {
+    pub fn get_num_nodes(&self) -> u32 {
         self.num_nodes
     }
 
-    fn get_num_edges(&self) -> u32 {
+    pub fn get_num_edges(&self) -> u32 {
         self.num_edges
     }
 
-    fn get_num_parameters(&self) -> u32 {
+    pub fn get_num_parameters(&self) -> u32 {
         self.num_parameters
     }
 
-    fn get_edge_points(&self, edge_id: u32) -> (u32, u32) {
+    pub fn get_edge_points(&self, edge_id: u32) -> (u32, u32) {
         (self.edges[edge_id as usize].source, self.edges[edge_id as usize].target)
     }
 
-    fn get_edge_parameters(&self, edge_id: u32) -> &(i32, i32) {
+    pub fn get_edge_parameters(&self, edge_id: u32) -> &(i32, i32) {
         &self.edges[edge_id as usize].parameters
     }
 
-    fn get_outgoing_edges(&self, node_id: u32) -> &Vec<u32> {
+    pub fn get_outgoing_edges(&self, node_id: u32) -> &Vec<u32> {
         &self.outgoing_edges[node_id as usize]
     }
 
-    fn get_incoming_edges(&self, node_id: u32) -> &Vec<u32> {
+    pub fn get_incoming_edges(&self, node_id: u32) -> &Vec<u32> {
         &self.incoming_edges[node_id as usize]
     }
 
-    fn get_restructure_id(&self, node_id: u32) -> i32 {
+    pub fn get_restructure_id(&self, node_id: u32) -> i32 {
         if self.restructure_ids.contains_key(&node_id) {
             self.restructure_ids[&node_id] as i32
         } else {
@@ -108,12 +107,36 @@ impl Graph {
         }
     }
 
-    fn augment_graph(&self, goals: &HashSet<u32>) {
-    
+    pub fn augment_graph(&mut self, goals: &HashSet<u32>) {
+        for g in goals {
+            let new_id = self.num_nodes;
+
+            for out_edge in &self.outgoing_edges[*g as usize] {
+                self.edges[*out_edge as usize].source = new_id;
+            }
+            for in_edge in &self.incoming_edges[*g as usize] {
+                self.edges[*in_edge as usize].target = new_id;
+            }
+
+            let new_out = self.outgoing_edges[*g as usize].to_vec();
+            let new_in = self.incoming_edges[*g as usize].to_vec();
+
+            self.outgoing_edges.push(new_out);
+            self.incoming_edges.push(new_in);
+
+            self.outgoing_edges[*g as usize] = vec![self.num_edges];
+            self.incoming_edges[*g as usize] = vec![self.num_edges + 1];
+
+            self.outgoing_edges[new_id as usize].push(self.num_edges + 1);
+            self.incoming_edges[new_id as usize].push(self.num_edges);
+
+            self.edges.push(Edge{id: self.num_edges, source: *g, target: new_id, parameters: (1, 1)});
+            self.edges.push(Edge{id: self.num_edges + 1, source: new_id, target: *g, parameters: (1, 1)});
+
+            self.num_nodes += 1;
+            self.num_edges += 2;
+
+            self.restructure_ids.insert(new_id, *g);
+        }
     }
-
-
-
-
-
 }
