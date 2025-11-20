@@ -28,8 +28,10 @@ impl Graph {
 
         let mut buf = String::new();
         reader.read_line(&mut buf)?;
-        let mut nums = buf.split(',').filter_map(|x| x.parse::<u32>().ok());
-        let (num_nodes, num_edges) = (nums.next().unwrap(), nums.next().unwrap());
+        let mut buf = buf.trim().split(',');
+        // read "100,280" to num_nodes and num_edges
+        let num_nodes = buf.next().unwrap().parse::<u32>().unwrap();
+        let num_edges = buf.next().unwrap().parse::<u32>().unwrap();
 
         let num_parameters = 2;
 
@@ -37,6 +39,9 @@ impl Graph {
 
         let mut outgoing_edges: Vec<Vec<u32>> = vec![Vec::new(); num_nodes as usize];
         let mut incoming_edges: Vec<Vec<u32>> = vec![Vec::new(); num_nodes as usize];
+
+        let mut buf = String::new();
+        reader.read_line(&mut buf)?;
 
         let mut edge_id = 0;
         for line_result in reader.lines() {
