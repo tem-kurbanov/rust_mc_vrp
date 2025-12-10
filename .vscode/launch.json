@@ -1,0 +1,38 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Debug executable 'rust_mc_vrp'",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceRoot}/target/debug/rust_mc_vrp",
+            "cwd": "${workspaceRoot}/target/debug/",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=rust_mc_vrp"
+                ],
+            },
+            "args": [],
+            "sourceLanguages": [
+                "rust"
+            ]
+            
+        },
+        {
+            "name": "Debug unit tests in executable 'rust_mc_vrp'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=rust_mc_vrp"
+                ]
+            }
+        }
+    ]
+}

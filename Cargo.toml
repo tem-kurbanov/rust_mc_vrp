@@ -3,4 +3,8 @@ name = "rust_mc_vrp"
 version = "0.1.0"
 edition = "2024"
 
+[profile.dev]
+dbginfo = 2
+opt-level = 0
+
 [dependencies]

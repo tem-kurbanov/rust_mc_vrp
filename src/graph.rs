@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Error, ErrorKind};
+use std::io::{self, BufRead, BufReader};
 
 struct Edge {
     id: u32,
