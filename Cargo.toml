@@ -8,3 +8,4 @@ dbginfo = 2
 opt-level = 0
 
 [dependencies]
+rand = "0.9.2"

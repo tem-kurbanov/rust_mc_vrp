@@ -9,12 +9,27 @@ struct CoverEdge {
     id: u32,
     composite_nodes: Vec<u32>,
     composite_edges: Vec<u32>,
-    parameters: (i32, i32),
+    parameters: (f64, f64),
+}
+
+impl CoverEdge {
+    pub fn get_id(&self) -> u32 {
+        self.id
+    }
+    pub fn get_composite_nodes(&self) -> &Vec<u32> {
+        &self.composite_nodes
+    }
+    pub fn get_composite_edges(&self) -> &Vec<u32> {
+        &self.composite_edges
+    }
+    pub fn get_parameters(&self) -> (f64, f64) {
+        self.parameters
+    }
 }
 
 struct Label {
     node: u32,
-    parameters: (i32, i32),
+    parameters: (f64, f64),
     parent: Option<Rc<Label>>,
     used_edge: u32,
 }
@@ -29,13 +44,15 @@ impl Eq for Label {}
 
 impl PartialOrd for Label {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))  // delegates to Ord::cmp
+        self.parameters.partial_cmp(&other.parameters)
     }
 }
 
 impl Ord for Label {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.parameters.cmp(&other.parameters)
+        self.parameters
+            .partial_cmp(&other.parameters)
+            .unwrap() // panics on NaN
     }
 }
 
@@ -122,7 +139,17 @@ impl<'a> CompleteGraph<'a> {
         self.goals.clone()
     }
 
-    
+    pub fn get_edges(&self) -> &Vec<CoverEdge> {
+        &self.edges
+    }
+
+    pub fn get_num_edges(&self) -> u32 {
+        self.num_edges
+    }
+
+    pub fn get_edge_parameters(&self, edge_id: u32) -> (f64, f64) {
+        self.edges[edge_id as usize].get_parameters()
+    }
 
     
 
@@ -139,7 +166,7 @@ fn mc_planning(original_graph: &Graph, source:u32, targets: &HashSet<u32>) -> Ha
         let mut open_labels: HashMap<u32, BTreeSet<RcLabel>> = HashMap::new();
         let mut to_expand: BTreeSet<RcLabel> = BTreeSet::new();
 
-        let source_label: RcLabel = Rc::new(Label {node: source, parameters: (0, 0), parent: None, used_edge: 0});
+        let source_label: RcLabel = Rc::new(Label {node: source, parameters: (0.0, 0.0), parent: None, used_edge: 0});
         open_labels.insert(source, BTreeSet::from([Rc::clone(&source_label)]));
         to_expand.insert(Rc::clone(&source_label));
 

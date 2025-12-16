@@ -6,7 +6,7 @@ struct Edge {
     id: u32,
     source: u32,
     target: u32,
-    parameters: (i32, i32),
+    parameters: (f64, f64),
 }
 
 pub struct Graph {
@@ -47,14 +47,14 @@ impl Graph {
         for line_result in reader.lines() {
             let line = line_result?;
             let parts = line.trim().split(',').map(|n| {
-                let n = n.parse::<i32>().unwrap();
+                let n = n.parse::<f64>().unwrap();
                 n
-            }).collect::<Vec<i32>>();
+            }).collect::<Vec<f64>>();
 
-            let start = parts[0];
-            let end = parts[1];
-            let p1 = parts[2].max(1);
-            let p2 = parts[3].max(1);
+            let start = parts[0] as u32;
+            let end = parts[1] as u32;
+            let p1 = parts[2].max(1.0);
+            let p2 = parts[3].max(1.0);
 
             edges.push(Edge{id: edge_id, source: start as u32, target: end as u32, parameters: (p1, p2)});
             outgoing_edges[start as usize].push(edge_id);
@@ -92,7 +92,7 @@ impl Graph {
         (self.edges[edge_id as usize].source, self.edges[edge_id as usize].target)
     }
 
-    pub fn get_edge_parameters(&self, edge_id: u32) -> &(i32, i32) {
+    pub fn get_edge_parameters(&self, edge_id: u32) -> &(f64, f64) {
         &self.edges[edge_id as usize].parameters
     }
 
@@ -135,8 +135,8 @@ impl Graph {
             self.outgoing_edges[new_id as usize].push(self.num_edges + 1);
             self.incoming_edges[new_id as usize].push(self.num_edges);
 
-            self.edges.push(Edge{id: self.num_edges, source: *g, target: new_id, parameters: (1, 1)});
-            self.edges.push(Edge{id: self.num_edges + 1, source: new_id, target: *g, parameters: (1, 1)});
+            self.edges.push(Edge{id: self.num_edges, source: *g, target: new_id, parameters: (1.0, 1.0)});
+            self.edges.push(Edge{id: self.num_edges + 1, source: new_id, target: *g, parameters: (1.0, 1.0)});
 
             self.num_nodes += 1;
             self.num_edges += 2;
