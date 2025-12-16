@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, BTreeSet};
-use std::rc::{Rc, Weak};
+use std::rc::{Rc};
 use std::cmp::Ordering;
 
 use crate::graph::Graph;
@@ -50,17 +50,17 @@ pub struct CompleteGraph<'a> {
     original_graph: &'a Graph,
 
     depot: u32,
-    goals: HashSet<u32>,
+    goals: BTreeSet<(u32, u32)>,
 }
 
 impl<'a> CompleteGraph<'a> {
-    pub fn new(original_graph: &'a Graph, depot: u32, goals: &HashSet<u32>) -> Self {
+    pub fn new(original_graph: &'a Graph, depot: u32, goals: &BTreeSet<(u32, u32)>) -> Self {
         // Use multicriteria planning between all goals and depot to construct the complete graph
         let num_nodes:u32 = (goals.len() as u32) + 1;
 
         let mut nodes: HashSet<u32> = HashSet::new();
         nodes.insert(depot);
-        nodes.extend(goals.clone());
+        nodes.extend(goals.iter().map(|(node, _)| *node));
         let nodes = nodes;
 
         let mut num_edges = 0;
@@ -114,7 +114,13 @@ impl<'a> CompleteGraph<'a> {
         }
     }
 
-    
+    pub fn get_depot(&self) -> u32 {
+        self.depot
+    }
+
+    pub fn get_goals(&self) -> BTreeSet<(u32, u32)> {
+        self.goals.clone()
+    }
 
     
 
