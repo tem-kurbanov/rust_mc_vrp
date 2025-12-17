@@ -1,7 +1,7 @@
-use std::collections::{HashMap, BTreeSet};
+use std::collections::{HashMap, HashSet, BTreeSet, BTreeMap};
 use rand::{Rng};
 use rand::seq::SliceRandom;
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
 
 use crate::complete_graph::CompleteGraph;
 
@@ -9,6 +9,15 @@ struct Chromosome {
     order_genes: Vec<u32>,
     edge_genes: Vec<bool>,
     fitness_values: (f64, f64),
+
+    crowding_distance: f64,
+    rank: usize,
+}
+
+impl Clone for Chromosome {
+    fn clone(&self) -> Self {
+        Self { order_genes: self.order_genes.clone(), edge_genes: self.edge_genes.clone(), fitness_values: self.fitness_values.clone(), crowding_distance: self.crowding_distance, rank: self.rank }
+    }
 }
 
 pub struct NSGA<'a> {
@@ -53,19 +62,24 @@ impl<'a> NSGA<'a> {
         Self { complete_graph, id_to_order_index, order_index_to_id, goals, adjacency_matrix, population_size, max_capacity }
     }
 
-    pub fn solve_capacitate_vrp(&self) -> Vec<Chromosome> {
+    pub fn solve_capacitated_vrp(&self) -> Vec<Chromosome> {
         let mut population = self.generate_initial_population();
+        let mut child_population = self.produce_child_population(&population);
+        population.extend(child_population);
 
         let num_iterations = 50;
         let mut current_iteration = 0;
         let mut converged = false;
         
         while current_iteration < num_iterations && !converged {
-            let sorted_populations = self.sort_population(&mut population);
-            let crowded_distances = self.calculate_crowded_distances(&sorted_populations);
-            let mut new_population = self.select_population(sorted_populations, crowded_distances);
-            new_population = self.crossover(new_population);
-            new_population = self.mutation(new_population);
+            let mut sorted_populations = self.sort_population(&mut population);
+            self.calculate_crowding_distances(&mut sorted_populations);
+
+            let mut new_population = self.select_population(&sorted_populations);
+
+            let mut child_population = self.produce_child_population(&new_population);
+            new_population.extend(child_population);
+
             converged = self.check_convergence(&new_population);
             current_iteration += 1;
             population = new_population;
@@ -98,33 +112,259 @@ impl<'a> NSGA<'a> {
             // Compute the fitness values
             let fitness_values = self.evaluate(&order_genes, &edge_genes);
 
-            population.push(Chromosome { order_genes, edge_genes, fitness_values });
+            population.push(Chromosome { order_genes, edge_genes, fitness_values, crowding_distance: 0.0, rank: 0 });
         }
 
         population
     }
 
-    fn calculate_crowded_distances(&self, &sorted_populations: &Vec<Vec<Chromosome>>) -> Vec<Vec<f64>> {
-        
+    fn produce_child_population(&self, parents: &Vec<Chromosome>) -> Vec<Chromosome> {
+        let n = self.population_size as usize;
+        let mut children = Vec::with_capacity(n);
+        let mut rng = rand::rng();
+
+        while children.len() < n {
+            let p1 = self.tournament_select(parents);
+            let p2 = self.tournament_select(parents);
+
+            let (mut c1, mut c2) = if rng.random_bool(self.p_crossover) {
+                self.crossover(p1, p2)          // returns 2 children
+            } else {
+                (p1.clone(), p2.clone())        // no crossover
+            };
+
+            self.mutate(&mut c1);
+            self.mutate(&mut c2);
+
+            // If your encoding needs repair, do it here
+            // self.repair(&mut c1);
+            // self.repair(&mut c2);
+
+            // Evaluate objectives here or later in batch (but must happen before next sorting)
+            // self.evaluate(&mut c1);
+            // self.evaluate(&mut c2);
+
+            children.push(c1);
+            if children.len() < n {
+                children.push(c2);
+            }
+        }
+
+        children
     }
 
-    fn sort_population(&self, population: & mut Vec<Chromosome>) -> Vec<Vec<Chromosome>> {
+    fn tournament_select(&self, population: &'a Vec<Chromosome>) -> &'a Chromosome {
 
+        let mut rng = rand::rng();
+        let n = population.len();
+
+        let i = rng.random_range(0..n);
+        let j = rng.random_range(0..n);
+
+        let a = &population[i];
+        let b = &population[j];
+
+        if a.rank < b.rank {
+            a
+        } else if a.rank > b.rank {
+            b
+        } else {
+            // same rank → use crowding distance
+            let da = a.crowding_distance;
+            let db = b.crowding_distance;
+
+            if da > db {
+                a
+            } else if da < db {
+                b
+            } else {
+                // complete tie → random
+                if rng.random_bool(0.5) { a } else { b }
+            }
+        }
     }
 
-    fn select_population(&self, sorted_populations: Vec<Vec<Chromosome>>, crowded_distances: Vec<Vec<f64>>) -> Vec<Chromosome> {
-        
+
+    fn calculate_crowding_distances(&self, population: &mut Vec<Chromosome>) {
+        // Reset
+        for ch in population.iter_mut() {
+            ch.crowding_distance = 0.0;
+        }
+
+        // Group indices by rank (front)
+        let mut fronts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (idx, ch) in population.iter().enumerate() {
+            fronts.entry(ch.rank).or_default().push(idx);
+        }
+
+        // Compute crowding per front
+        for (_rank, front) in fronts {
+            let m = front.len();
+
+            if m == 0 {
+                continue;
+            }
+            if m == 1 {
+                population[front[0]].crowding_distance = f64::INFINITY;
+                continue;
+            }
+            if m == 2 {
+                population[front[0]].crowding_distance = f64::INFINITY;
+                population[front[1]].crowding_distance = f64::INFINITY;
+                continue;
+            }
+
+            // ---- Objective 0 ----
+            {
+                let mut ord = front.clone();
+                ord.sort_by(|&a, &b| {
+                    population[a].fitness_values.0.total_cmp(&population[b].fitness_values.0)
+                });
+
+                let minv = population[ord[0]].fitness_values.0;
+                let maxv = population[ord[m - 1]].fitness_values.0;
+                let denom = maxv - minv;
+
+                population[ord[0]].crowding_distance = f64::INFINITY;
+                population[ord[m - 1]].crowding_distance = f64::INFINITY;
+
+                if denom > 0.0 {
+                    for i in 1..m - 1 {
+                        let k = ord[i];
+                        if population[k].crowding_distance.is_infinite() {
+                            continue;
+                        }
+                        let next = population[ord[i + 1]].fitness_values.0;
+                        let prev = population[ord[i - 1]].fitness_values.0;
+                        population[k].crowding_distance += (next - prev) / denom;
+                    }
+                }
+            }
+
+            // ---- Objective 1 ----
+            {
+                let mut ord = front.clone();
+                ord.sort_by(|&a, &b| {
+                    population[a].fitness_values.1.total_cmp(&population[b].fitness_values.1)
+                });
+
+                let minv = population[ord[0]].fitness_values.1;
+                let maxv = population[ord[m - 1]].fitness_values.1;
+                let denom = maxv - minv;
+
+                population[ord[0]].crowding_distance = f64::INFINITY;
+                population[ord[m - 1]].crowding_distance = f64::INFINITY;
+
+                if denom > 0.0 {
+                    for i in 1..m - 1 {
+                        let k = ord[i];
+                        if population[k].crowding_distance.is_infinite() {
+                            continue;
+                        }
+                        let next = population[ord[i + 1]].fitness_values.1;
+                        let prev = population[ord[i - 1]].fitness_values.1;
+                        population[k].crowding_distance += (next - prev) / denom;
+                    }
+                }
+            }
+        }
     }
+
+    fn sort_population(&self, population: &mut Vec<Chromosome>) -> Vec<Chromosome> {
+        for ch in population.iter_mut() {
+            ch.rank = 0;
+        }
+        // Sort population into several sets based on dominance of fitness values
+        let mut sorted_population = Vec::new();
+        let mut current_rank = 1;
+        while !population.is_empty() {
+            // Collect indices of non-dominated chromosomes
+            let mut pareto_indices: Vec<usize> = Vec::new();
+            let pop = population.as_slice();
+            for i in 0..pop.len() {
+                // Check if the chromosome is dominated by any other chromosome
+                let mut dominated = false;
+                for j in 0..pop.len() {
+                    if i != j {
+                        if Self::dominates(&pop[j], &pop[i]) {
+                            dominated = true;
+                            break;
+                        }
+                    }
+                }
+                // If the chromosome is not dominated by any other chromosome, add it to the Pareto set
+                if !dominated {
+                    pareto_indices.push(i);
+                }
+            }
+            // Add the non-dominated chromosomes to a separate set and remove them from the population
+            
+            for i in pareto_indices {
+                let mut chromosome = population.remove(i);
+                chromosome.rank = current_rank;
+                sorted_population.push(chromosome);
+            }
+            current_rank += 1;
+        }
+
+        sorted_population
+    }
+
+    fn select_population(&self, population: &Vec<Chromosome>) -> Vec<Chromosome> {
+        let target = self.population_size as usize;
+        let mut new_population = Vec::with_capacity(target);
+
+        let mut current_rank: usize = 1; // rank 0 = unassigned
+
+        while new_population.len() < target {
+            // Collect indices of chromosomes with this rank
+            let mut rank_indices: Vec<usize> = population
+                .iter()
+                .enumerate()
+                .filter_map(|(i, ch)| if ch.rank == current_rank { Some(i) } else { None })
+                .collect();
+
+            assert!(!rank_indices.is_empty());
+
+            let remaining = target - new_population.len();
+
+            // Whole rank fits
+            if rank_indices.len() <= remaining {
+                new_population.extend(rank_indices.into_iter().map(|i| population[i].clone()));
+                current_rank += 1;
+                continue;
+            }
+
+            // Partial rank: take highest crowding distance within this rank
+            rank_indices.sort_by(|&a, &b| {
+                population[b]
+                    .crowding_distance
+                    .total_cmp(&population[a].crowding_distance)
+            });
+
+            new_population.extend(
+                rank_indices
+                    .into_iter()
+                    .take(remaining)
+                    .map(|i| population[i].clone()),
+            );
+
+            break; // filled
+        }
+
+        new_population
+    }
+
 
     fn check_convergence(&self, &population: &Vec<Chromosome>) -> bool {
 
     }
 
-    fn crossover(&self, population: Vec<Chromosome>) -> Vec<Chromosome> {
+    fn crossover(&self, p1: &Chromosome, p2: &Chromosome) -> (Chromosome, Chromosome) {
 
     }
 
-    fn mutation(&self, population: Vec<Chromosome>) -> Vec<Chromosome> {
+    fn mutate(&self, chromosome: &mut Chromosome) {
 
     }
 
@@ -176,6 +416,10 @@ impl<'a> NSGA<'a> {
 
         return total_parameters;
 
+    }
+
+    fn dominates(chromosome1: &Chromosome, chromosome2: &Chromosome) -> bool {
+        chromosome1.fitness_values.0 <= chromosome2.fitness_values.0 && chromosome1.fitness_values.1 <= chromosome2.fitness_values.1
     }
     
 }
