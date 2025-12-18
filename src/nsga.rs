@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, BTreeSet, BTreeMap};
 use rand::{Rng};
 use rand::seq::SliceRandom;
 use std::cmp::Ordering;
+use std::hash::Hash;
 
 use crate::complete_graph::CompleteGraph;
 
@@ -31,10 +32,13 @@ pub struct NSGA<'a> {
 
     max_capacity: u32,
 
+    p_crossover: f64,
+    p_mutation: f64,
+
 }
 
 impl<'a> NSGA<'a> {
-    pub fn new(complete_graph: CompleteGraph<'a>, population_size: u32, max_capacity: u32) -> Self {
+    pub fn new(complete_graph: CompleteGraph<'a>, population_size: u32, max_capacity: u32, p_crossover: f64, p_mutation: f64) -> Self {
         let mut id_to_order_index = HashMap::new();
         let mut order_index_to_id = HashMap::new();
         let mut goals: BTreeMap<u32, u32> = BTreeMap::new();
@@ -59,7 +63,7 @@ impl<'a> NSGA<'a> {
             adjacency_matrix[node1 as usize][node2 as usize].push(edge_id);
         }
 
-        Self { complete_graph, id_to_order_index, order_index_to_id, goals, adjacency_matrix, population_size, max_capacity }
+        Self { complete_graph, id_to_order_index, order_index_to_id, goals, adjacency_matrix, population_size, max_capacity, p_crossover, p_mutation }
     }
 
     pub fn solve_capacitated_vrp(&self) -> Vec<Chromosome> {
@@ -133,8 +137,10 @@ impl<'a> NSGA<'a> {
                 (p1.clone(), p2.clone())        // no crossover
             };
 
-            self.mutate(&mut c1);
-            self.mutate(&mut c2);
+            if !rng.random_bool(self.p_mutation) {
+                self.mutate(&mut c1);
+                self.mutate(&mut c2);
+            }
 
             // If your encoding needs repair, do it here
             // self.repair(&mut c1);
@@ -356,17 +362,87 @@ impl<'a> NSGA<'a> {
     }
 
 
-    fn check_convergence(&self, &population: &Vec<Chromosome>) -> bool {
-
-    }
-
     fn crossover(&self, p1: &Chromosome, p2: &Chromosome) -> (Chromosome, Chromosome) {
+        let c1 = self.ox1(&p1.order_genes, &p2.order_genes);
+        let c2 = self.ox1(&p2.order_genes, &p1.order_genes);
 
+        let mut child1 = p1.clone();
+        child1.order_genes = c1;
+        child1.fitness_values = (0.0, 0.0);
+        child1.rank = 0;
+        child1.crowding_distance = 0.0;
+
+        let mut child2 = p2.clone();
+        child2.order_genes = c2;
+        child2.fitness_values = (0.0, 0.0);
+        child2.rank = 0;
+        child2.crowding_distance = 0.0;
+
+        (child1, child2)
     }
 
-    fn mutate(&self, chromosome: &mut Chromosome) {
+    fn ox1<T: Copy + Eq + Hash>(&self, p1: &[T], p2: &[T]) -> Vec<T> {
+        // Select crossover points
+        let n = p1.len();
+        let mut rng = rand::rng();
+    
+        // two cut points [a, b)
+        let mut a = rng.random_range(0..n);
+        let mut b = rng.random_range(0..n);
+        if a > b { std::mem::swap(&mut a, &mut b); }
+        if a == b {
+            b = (a + 1) % n;
+            if a > b { std::mem::swap(&mut a, &mut b); }
+        }
 
+         let mut child: Vec<Option<T>> = vec![None; n];
+
+        // copy the slice from p1
+        let mut used = HashSet::with_capacity(b - a);
+        for i in a..b {
+            let g = p1[i];
+            child[i] = Some(g);
+            used.insert(g);
+        }
+
+        // fill remaining slots from p2, starting at b, circularly
+        let mut write = b % n;
+        for k in 0..n {
+            let g = p2[(b + k) % n];
+            if used.contains(&g) { continue; }
+
+            while child[write].is_some() {
+                write = (write + 1) % n;
+            }
+            child[write] = Some(g);
+            used.insert(g);
+        }
+
+        child.into_iter().map(|x| x.unwrap()).collect()
     }
+
+
+    fn mutate(&self, chromosome: &mut Chromosome) { // inversion mutation
+        let v = &mut chromosome.order_genes;
+        let n = v.len();
+
+        if n < 2 { 
+            return; 
+        }
+
+        let mut rng = rand::rng();
+        let mut i = rng.random_range(0..n);
+        let mut j = rng.random_range(0..n);
+
+        if i > j { 
+            std::mem::swap(&mut i, &mut j); 
+        }
+        if i == j { 
+            return; 
+        }
+        v[i..=j].reverse();
+    }
+
 
     fn evaluate(&self, order_genes: &Vec<u32>, edge_genes: &Vec<bool>) -> (f64, f64) {
         // Evaluate the fitness values
