@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use crate::graph::Graph;
 
 
-struct CoverEdge {
+pub struct CoverEdge {
     id: u32,
     composite_nodes: Vec<u32>,
     composite_edges: Vec<u32>,
