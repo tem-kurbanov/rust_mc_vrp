@@ -1,6 +1,5 @@
 use rand::Rng;
 use rand::seq::SliceRandom;
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::process::exit;
@@ -200,11 +199,13 @@ impl<'a> NSGA<'a> {
             /*eps*/ 1e-6,
         );
 
-        for generation in 0..num_iterations {
-            let mut sorted_populations = self.sort_population(&mut population);
-            self.calculate_crowding_distances(&mut sorted_populations);
+        let mut initial_hv: f64 = 0.0;
 
-            let mut new_population = self.select_population(&sorted_populations);
+        for generation in 0..num_iterations {
+            let fronts = self.sort_population(&mut population);
+            self.calculate_crowding_distances(&mut population, &fronts);
+
+            let mut new_population = self.select_population(&population, &fronts);
 
             let child_population = self.produce_child_population(&new_population);
             new_population.extend(child_population);
@@ -217,17 +218,20 @@ impl<'a> NSGA<'a> {
 
             // --- convergence check on archive ---
             let (_hv, converged) = hv_stall.update(&archive_front);
+            if initial_hv == 0.0 {
+                initial_hv = _hv;
+            }
             println!(
                 "Generation {}: Archive size {}, HV: {:.6}",
                 generation + 1,
                 archive_front.len(),
-                _hv
+                _hv - initial_hv
             );
-            // if converged {
-            //     println!("Converged at generation {}", generation + 1);
-            //     population = new_population;
-            //     break;
-            // }
+            if converged {
+                println!("Converged at generation {}", generation + 1);
+                population = new_population;
+                break;
+            }
 
             population = new_population;
         }
@@ -333,8 +337,11 @@ impl<'a> NSGA<'a> {
                 (p1.clone(), p2.clone()) // no crossover
             };
 
-            if !rng.random_bool(self.p_mutation) {
+            // Mutate each child independently with probability p_mutation
+            if rng.random_bool(self.p_mutation) {
                 self.mutate(&mut c1);
+            }
+            if rng.random_bool(self.p_mutation) {
                 self.mutate(&mut c2);
             }
 
@@ -379,20 +386,14 @@ impl<'a> NSGA<'a> {
         }
     }
 
-    fn calculate_crowding_distances(&self, population: &mut Vec<Chromosome>) {
+    fn calculate_crowding_distances(&self, population: &mut [Chromosome], fronts: &[Vec<usize>]) {
         // Reset
         for ch in population.iter_mut() {
             ch.crowding_distance = 0.0;
         }
 
-        // Group indices by rank (front)
-        let mut fronts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for (idx, ch) in population.iter().enumerate() {
-            fronts.entry(ch.rank).or_default().push(idx);
-        }
-
         // Compute crowding per front
-        for (_rank, front) in fronts {
+        for front in fronts {
             let m = front.len();
 
             if m == 0 {
@@ -470,92 +471,97 @@ impl<'a> NSGA<'a> {
         }
     }
 
-    fn sort_population(&self, population: &mut Vec<Chromosome>) -> Vec<Chromosome> {
+    /// Standard NSGA-II fast non-dominated sort (O(MN^2) with M=2 here).
+    /// Assigns `rank` for each chromosome and returns fronts as indices into `population`.
+    fn sort_population(&self, population: &mut [Chromosome]) -> Vec<Vec<usize>> {
+        let n = population.len();
         for ch in population.iter_mut() {
             ch.rank = 0;
         }
-        // Sort population into several sets based on dominance of fitness values
-        let mut sorted_population = Vec::new();
-        let mut current_rank = 1;
-        while !population.is_empty() {
-            // Collect indices of non-dominated chromosomes
-            let mut pareto_indices: Vec<usize> = Vec::new();
-            let pop = population.as_slice();
-            for i in 0..pop.len() {
-                // Check if the chromosome is dominated by any other chromosome
-                let mut dominated = false;
-                for j in 0..pop.len() {
-                    if i != j {
-                        if Self::dominates(pop[j].fitness_values, pop[i].fitness_values) {
-                            dominated = true;
-                            break;
-                        }
-                    }
-                }
-                // If the chromosome is not dominated by any other chromosome, add it to the Pareto set
-                if !dominated {
-                    pareto_indices.push(i);
+
+        let mut domination_count: Vec<usize> = vec![0; n];
+        let mut dominates: Vec<Vec<usize>> = vec![Vec::new(); n];
+
+        // Pairwise dominance checks (symmetric loop cuts comparisons roughly in half)
+        for p in 0..n {
+            for q in (p + 1)..n {
+                let fp = population[p].fitness_values;
+                let fq = population[q].fitness_values;
+
+                if Self::dominates(fp, fq) {
+                    dominates[p].push(q);
+                    domination_count[q] += 1;
+                } else if Self::dominates(fq, fp) {
+                    dominates[q].push(p);
+                    domination_count[p] += 1;
                 }
             }
-            // Add the non-dominated chromosomes to a separate set and remove them from the population
-            pareto_indices.reverse();
-            for i in pareto_indices {
-                let mut chromosome = population.remove(i);
-                chromosome.rank = current_rank;
-                sorted_population.push(chromosome);
-            }
-            current_rank += 1;
         }
 
-        sorted_population
+        let mut fronts: Vec<Vec<usize>> = Vec::new();
+        let mut first: Vec<usize> = Vec::new();
+        for i in 0..n {
+            if domination_count[i] == 0 {
+                population[i].rank = 1;
+                first.push(i);
+            }
+        }
+        if first.is_empty() {
+            // Shouldn't happen unless all fitnesses are NaN/inf in a weird way.
+            // Fall back to single front.
+            for i in 0..n {
+                population[i].rank = 1;
+                first.push(i);
+            }
+        }
+        fronts.push(first);
+
+        let mut front_idx = 0usize;
+        while front_idx < fronts.len() {
+            let mut next: Vec<usize> = Vec::new();
+            for &p in &fronts[front_idx] {
+                for &q in &dominates[p] {
+                    domination_count[q] -= 1;
+                    if domination_count[q] == 0 {
+                        population[q].rank = front_idx + 2;
+                        next.push(q);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            fronts.push(next);
+            front_idx += 1;
+        }
+
+        fronts
     }
 
-    fn select_population(&self, population: &Vec<Chromosome>) -> Vec<Chromosome> {
+    fn select_population(&self, population: &[Chromosome], fronts: &[Vec<usize>]) -> Vec<Chromosome> {
         let target = self.population_size as usize;
         let mut new_population = Vec::with_capacity(target);
 
-        let mut current_rank: usize = 1; // rank 0 = unassigned
-
-        while new_population.len() < target {
-            // Collect indices of chromosomes with this rank
-            let mut rank_indices: Vec<usize> = population
-                .iter()
-                .enumerate()
-                .filter_map(|(i, ch)| {
-                    if ch.rank == current_rank {
-                        Some(i)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            assert!(!rank_indices.is_empty());
+        for front in fronts {
+            if new_population.len() >= target {
+                break;
+            }
 
             let remaining = target - new_population.len();
-
-            // Whole rank fits
-            if rank_indices.len() <= remaining {
-                new_population.extend(rank_indices.into_iter().map(|i| population[i].clone()));
-                current_rank += 1;
+            if front.len() <= remaining {
+                new_population.extend(front.iter().map(|&i| population[i].clone()));
                 continue;
             }
 
-            // Partial rank: take highest crowding distance within this rank
-            rank_indices.sort_by(|&a, &b| {
+            // Partial front: take highest crowding distance
+            let mut ord = front.clone();
+            ord.sort_by(|&a, &b| {
                 population[b]
                     .crowding_distance
                     .total_cmp(&population[a].crowding_distance)
             });
-
-            new_population.extend(
-                rank_indices
-                    .into_iter()
-                    .take(remaining)
-                    .map(|i| population[i].clone()),
-            );
-
-            break; // filled
+            new_population.extend(ord.into_iter().take(remaining).map(|i| population[i].clone()));
+            break;
         }
 
         new_population
@@ -650,60 +656,70 @@ impl<'a> NSGA<'a> {
 
     fn evaluate(&self, order_genes: &Vec<u32>, edge_genes: &Vec<bool>) -> (f64, f64) {
         // Evaluate the fitness values
-        let mut current_capacity: u32 = 0;
         let mut route_start_index: u32 = 0;
-        let mut route_end_index: u32 = 0;
+        let n: u32 = order_genes.len() as u32;
 
         let mut total_parameters = (0.0, 0.0);
 
-        while route_start_index < order_genes.len() as u32 {
-            while current_capacity <= self.max_capacity as u32
-                && route_end_index < order_genes.len() as u32
-            {
+        let add_leg = |from: u32, to: u32, total: &mut (f64, f64)| {
+            let mut edge_id = 0;
+            let mut edge_found = false;
+            for edge in &self.adjacency_matrix[from as usize][to as usize] {
+                if edge_genes[*edge as usize] {
+                    edge_id = *edge;
+                    edge_found = true;
+                    break;
+                }
+            }
+
+            if !edge_found {
+                println!(
+                    "No edge from node {} to node {}",
+                    self.order_index_to_id[&from],
+                    self.order_index_to_id[&to]
+                );
+                exit(1);
+            }
+
+            let edge_parameters = self.complete_graph.get_edge_parameters(edge_id);
+            total.0 += edge_parameters.0;
+            total.1 += edge_parameters.1;
+        };
+
+        while route_start_index < n {
+            let mut current_capacity: u32 = 0;
+            let mut route_end_index: u32 = route_start_index;
+
+            // Build a single vehicle route as a maximal prefix that still fits capacity.
+            while route_end_index < n {
                 let current_node = order_genes[route_end_index as usize];
-                let node_demand = self.goals.get(&current_node).unwrap();
+                let node_demand = *self.goals.get(&current_node).unwrap();
+
+                // Infeasible instance / chromosome for CVRP: a single customer exceeds capacity.
+                // Return a dominated fitness so it won't survive selection.
+                if node_demand > self.max_capacity {
+                    return (f64::INFINITY, f64::INFINITY);
+                }
+
+                // Stop BEFORE exceeding capacity.
+                if current_capacity + node_demand > self.max_capacity {
+                    break;
+                }
 
                 current_capacity += node_demand;
                 route_end_index += 1;
             }
-            // Route starts at route_start_index and ends at route_end_index
-            // Slice the involved nodes into a separate vector
-            let slice = &order_genes[route_start_index as usize..route_end_index as usize];
-            let mut current_route = slice.to_vec();
-            current_route.insert(0, 0);
-            current_route.push(0);
-
-            let mut current_parameters = (0.0, 0.0);
-            for i in 0..current_route.len() - 1 {
-                let current_node = current_route[i];
-                let next_node = current_route[i + 1];
-                let mut edge_id = 0;
-                let mut edge_found = false;
-                for edge in &self.adjacency_matrix[current_node as usize][next_node as usize] {
-                    if edge_genes[*edge as usize] {
-                        edge_id = *edge;
-                        edge_found = true;
-                        break;
-                    }
-                }
-
-                if !edge_found {
-                    println!(
-                        "No edge from node {} to node {}",
-                        self.order_index_to_id[&current_node], self.order_index_to_id[&next_node]
-                    );
-                    exit(1);
-                }
-                let edge_parameters = self.complete_graph.get_edge_parameters(edge_id);
-                current_parameters.0 += edge_parameters.0;
-                current_parameters.1 += edge_parameters.1;
+            // Route is [route_start_index, route_end_index). Sum legs directly:
+            // depot -> first -> ... -> last -> depot.
+            let mut prev_node: u32 = 0;
+            for idx in route_start_index..route_end_index {
+                let node = order_genes[idx as usize];
+                add_leg(prev_node, node, &mut total_parameters);
+                prev_node = node;
             }
-
-            total_parameters.0 += current_parameters.0;
-            total_parameters.1 += current_parameters.1;
+            add_leg(prev_node, 0, &mut total_parameters);
 
             route_start_index = route_end_index;
-            current_capacity = 0;
         }
 
         return total_parameters;

@@ -16,10 +16,10 @@ use nsga::NSGA;
 #[derive(Parser)]
 #[command(author, version, about = "Solve CVRP using NSGA-II")]
 struct Config {
-    #[arg(short, long, default_value = "./art/c500/graph_007_n500_c1_u0_seed12968.csv", help = "Path to graph CSV (required)")]
+    #[arg(short, long, default_value = "out/500u1/vrp_multicriteria_n500_l0_m1_seed11394_graph0001.csv", help = "Path to graph CSV (required)")]
     graph_path: String,
 
-    #[arg(short, long, default_value = "20", help = "Number of goals to randomly select (required)")]
+    #[arg(short, long, default_value = "100", help = "Number of goals to randomly select (required)")]
     num_goals: usize,
 
     #[arg(short, long, default_value = "10", help = "Maximum demand per goal (required)")]
@@ -81,21 +81,29 @@ fn main() {
     // Select a random depot
     let depot: u32 = rng.random_range(0..(num_nodes as u32));
 
-    // Select unique goal node ids different from depot
-    let mut selected_goals: BTreeSet<(u32, u32)> = BTreeSet::new();
-    while selected_goals.len() < cfg.num_goals {
+    // First, select unique goal node ids different from depot
+    let mut unique_goal_nodes: BTreeSet<u32> = BTreeSet::new();
+    while unique_goal_nodes.len() < cfg.num_goals {
         let candidate = rng.random_range(0..(num_nodes as u32));
         if candidate == depot {
             continue;
         }
+        unique_goal_nodes.insert(candidate);
+    }
+    
+    // Then, assign random demands to each unique goal node
+    let mut selected_goals: BTreeSet<(u32, u32)> = BTreeSet::new();
+    for node_id in unique_goal_nodes {
         // Random demand in 1..=max_demand
         let demand = if cfg.max_demand == 0 {
             0
         } else {
             rng.random_range(1..=cfg.max_demand)
         };
-        selected_goals.insert((candidate, demand));
+        selected_goals.insert((node_id, demand));
     }
+
+    println!("Selected goals: {:?}", selected_goals);
 
     // Determine vehicle capacity to pass to NSGA
     let vehicle_capacity: u32 = cfg.vehicle_capacity;

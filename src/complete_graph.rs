@@ -36,7 +36,15 @@ struct Label {
 
 impl PartialEq for Label {
     fn eq(&self, other: &Self) -> bool {
+        // Compare all fields for true equality
         self.parameters == other.parameters
+            && self.node == other.node
+            && self.used_edge == other.used_edge
+            && match (&self.parent, &other.parent) {
+                (None, None) => true,
+                (Some(p1), Some(p2)) => Rc::ptr_eq(p1, p2),
+                _ => false,
+            }
     }
 }
 
@@ -44,15 +52,42 @@ impl Eq for Label {}
 
 impl PartialOrd for Label {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.parameters.partial_cmp(&other.parameters)
+        // Primary ordering by parameters (for lexicographic expansion)
+        match self.parameters.partial_cmp(&other.parameters)? {
+            Ordering::Equal => {
+                // Break ties with node
+                match self.node.cmp(&other.node) {
+                    Ordering::Equal => {
+                        // Break ties with used_edge
+                        match self.used_edge.cmp(&other.used_edge) {
+                            Ordering::Equal => {
+                                // Break ties with parent (compare by pointer address)
+                                match (&self.parent, &other.parent) {
+                                    (None, None) => Some(Ordering::Equal),
+                                    (None, Some(_)) => Some(Ordering::Less),
+                                    (Some(_), None) => Some(Ordering::Greater),
+                                    (Some(p1), Some(p2)) => {
+                                        // Compare parent pointers by address for tie-breaking
+                                        let addr1 = p1.as_ref() as *const Label as usize;
+                                        let addr2 = p2.as_ref() as *const Label as usize;
+                                        addr1.partial_cmp(&addr2)
+                                    }
+                                }
+                            }
+                            other => Some(other),
+                        }
+                    }
+                    other => Some(other),
+                }
+            }
+            other => Some(other),
+        }
     }
 }
 
 impl Ord for Label {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.parameters
-            .partial_cmp(&other.parameters)
-            .unwrap() // panics on NaN
+        self.partial_cmp(other).unwrap() // panics on NaN
     }
 }
 
@@ -91,6 +126,7 @@ impl<'a> CompleteGraph<'a> {
             let found_labels = mc_planning(original_graph, *node, &targets);
 
             for (target, labels) in found_labels {
+                assert!(labels.len() > 0, "No labels found for node {} and target {}", node, target);
                 for label in labels {
                     let edge_parameters = label.parameters;
                     let mut composite_nodes: Vec<u32> = Vec::new();
@@ -170,6 +206,8 @@ fn mc_planning(original_graph: &Graph, source:u32, targets: &HashSet<u32>) -> Ha
         open_labels.insert(source, BTreeSet::from([Rc::clone(&source_label)]));
         to_expand.insert(Rc::clone(&source_label));
 
+        let mut touched_nodes: HashSet<u32> = HashSet::new();
+
         while !to_expand.is_empty() {
             let current_label = to_expand.pop_first().unwrap();
             let current_node = current_label.node;
@@ -180,6 +218,7 @@ fn mc_planning(original_graph: &Graph, source:u32, targets: &HashSet<u32>) -> Ha
             'edge_loop: for edge in original_graph.get_outgoing_edges(current_node) {
                 let next_label = extend_label(original_graph, &current_label, *edge);
 
+                touched_nodes.insert(next_label.node);
 
                 // Domination check against closed labels
                 for l in closed_labels.get(&next_label.node).unwrap_or(&BTreeSet::new()) {
@@ -194,12 +233,13 @@ fn mc_planning(original_graph: &Graph, source:u32, targets: &HashSet<u32>) -> Ha
                     if dominates(l, &next_label) {
                         continue 'edge_loop;
                     }
-                    else if dominates(l, &next_label) {
+                    else if dominates(&next_label, l) {
                         to_remove.push(Rc::clone(l));
                     }
                 }
                 for l in to_remove {
                     open_labels.get_mut(&next_label.node).unwrap().remove(&l);
+                    to_expand.remove(&l);
                 }
 
                 open_labels.entry(next_label.node).or_default().insert(Rc::clone(&next_label));
@@ -207,6 +247,10 @@ fn mc_planning(original_graph: &Graph, source:u32, targets: &HashSet<u32>) -> Ha
 
             }
         }
+
+        assert!(touched_nodes.contains(&427), "Touched nodes must contain 427");
+        assert!(open_labels.contains_key(&427), "Open labels must contain 427");
+        assert!(closed_labels.contains_key(&427), "Closed labels must contain 427");
 
         let mut result: HashMap<u32, BTreeSet<RcLabel>> = HashMap::new();
         for t in targets {
