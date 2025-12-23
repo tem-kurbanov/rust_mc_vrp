@@ -19,7 +19,7 @@ struct Config {
     #[arg(short, long, default_value = "out/500u1/vrp_multicriteria_n500_l0_m1_seed11394_graph0001.csv", help = "Path to graph CSV (required)")]
     graph_path: String,
 
-    #[arg(short, long, default_value = "100", help = "Number of goals to randomly select (required)")]
+    #[arg(short, long, default_value = "30", help = "Number of goals to randomly select (required)")]
     num_goals: usize,
 
     #[arg(short, long, default_value = "10", help = "Maximum demand per goal (required)")]
