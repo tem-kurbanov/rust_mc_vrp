@@ -2,6 +2,7 @@ use rand::Rng;
 use rand::seq::SliceRandom;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::Hash;
+use std::io::Write;
 use std::process::exit;
 
 use crate::complete_graph::CompleteGraph;
@@ -32,10 +33,12 @@ impl Clone for Chromosome {
 }
 
 impl Chromosome {
+    #[allow(dead_code)]
     pub fn get_order_genes(&self) -> &Vec<u32> {
         &self.order_genes
     }
 
+    #[allow(dead_code)]
     pub fn get_fitness_values(&self) -> (f64, f64) {
         self.fitness_values
     }
@@ -128,6 +131,7 @@ impl HvStall {
 
 pub struct NSGA<'a> {
     complete_graph: CompleteGraph<'a>,
+    #[allow(dead_code)]
     id_to_order_index: HashMap<u32, u32>,
     order_index_to_id: HashMap<u32, u32>,
 
@@ -189,7 +193,14 @@ impl<'a> NSGA<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn solve_capacitated_vrp(&self) -> Vec<Chromosome> {
+        let stdout = std::io::stdout();
+        let mut w = std::io::BufWriter::new(stdout.lock());
+        self.solve_capacitated_vrp_with_writer(&mut w)
+    }
+
+    pub fn solve_capacitated_vrp_with_writer<W: Write>(&self, w: &mut W) -> Vec<Chromosome> {
         let mut population = self.generate_initial_population();
         let child_population = self.produce_child_population(&population);
         population.extend(child_population);
@@ -227,14 +238,16 @@ impl<'a> NSGA<'a> {
             if initial_hv == 0.0 {
                 initial_hv = _hv;
             }
-            println!(
+            writeln!(
+                w,
                 "Generation {}: Archive size {}, HV: {:.6}",
                 generation + 1,
                 archive_front.len(),
                 _hv - initial_hv
-            );
+            )
+            .ok();
             if converged {
-                println!("Converged at generation {}", generation + 1);
+                writeln!(w, "Converged at generation {}", generation + 1).ok();
                 population = new_population;
                 break;
             }
@@ -272,21 +285,24 @@ impl<'a> NSGA<'a> {
                 unique.push(idx);
             }
 
-            println!(
+            let _ = writeln!(
+                w,
                 "Final nondominated solutions (rank 1): {} (unique by fitness)",
                 unique.len()
             );
             for (k, &idx) in unique.iter().enumerate() {
                 let ch = &population[idx];
-                println!(
+                writeln!(
+                    w,
                     "  Solution {}: ({:.3}, {:.3})",
                     k + 1,
                     ch.fitness_values.0,
                     ch.fitness_values.1
-                );
+                )
+                .ok();
                 let routes = self.decode_routes_node_ids(&ch.order_genes);
                 for (ri, route) in routes.iter().enumerate() {
-                    println!("    Route {}: {:?}", ri + 1, route);
+                    writeln!(w, "    Route {}: {:?}", ri + 1, route).ok();
                 }
             }
         }
