@@ -19,7 +19,7 @@ struct Config {
     #[arg(short, long, default_value = "out/500u1/vrp_multicriteria_n500_l0_m1_seed11394_graph0001.csv", help = "Path to graph CSV (required)")]
     graph_path: String,
 
-    #[arg(short, long, default_value = "30", help = "Number of goals to randomly select (required)")]
+    #[arg(short, long, default_value = "200", help = "Number of goals to randomly select (required)")]
     num_goals: usize,
 
     #[arg(short, long, default_value = "10", help = "Maximum demand per goal (required)")]
@@ -31,8 +31,8 @@ struct Config {
     #[arg(
         short,
         long,
-        default_value = "10",
-        help = "Vehicle capacity (default: 3 * max_demand if >0, else 10)"
+        default_value = "50",
+        help = "Vehicle capacity (default: 50)"
     )]
     vehicle_capacity: u32,
 
@@ -75,7 +75,8 @@ fn main() {
     // Setup RNG
     let mut rng: StdRng = match cfg.seed {
         Some(s) => SeedableRng::seed_from_u64(s),
-        None => SeedableRng::seed_from_u64(10),
+        // None => SeedableRng::seed_from_u64(10),
+        None => SeedableRng::seed_from_u64(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()),
     };
 
     // Select a random depot
@@ -103,6 +104,7 @@ fn main() {
         selected_goals.insert((node_id, demand));
     }
 
+    println!("Depot: {}", depot);
     println!("Selected goals: {:?}", selected_goals);
 
     // Determine vehicle capacity to pass to NSGA
@@ -135,8 +137,8 @@ fn main() {
     // Solve CVRP
     let solution = nsga.solve_capacitated_vrp();
 
-    println!("Solution ({} chromosomes):", solution.len());
-    for (i, chrom) in solution.iter().enumerate() {
-        println!("Chromosome {}: {:?} {:?}", i, chrom.get_order_genes(), chrom.get_fitness_values());
-    }
+    // println!("Solution ({} chromosomes):", solution.len());
+    // for (i, chrom) in solution.iter().enumerate() {
+    //     println!("Chromosome {}: {:?} {:?}", i, chrom.get_order_genes(), chrom.get_fitness_values());
+    // }
 }

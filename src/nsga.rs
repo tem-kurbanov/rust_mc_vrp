@@ -242,9 +242,53 @@ impl<'a> NSGA<'a> {
             population = new_population;
         }
 
-        println!("Final archive ({} solutions):", archive_front.len());
-        for (i, (obj1, obj2)) in archive_front.iter().enumerate() {
-            println!("  Solution {}: ({:.3}, {:.3})", i + 1, obj1, obj2);
+        // Print the actual nondominated solutions (rank 1) as decoded routes.
+        let fronts = self.sort_population(&mut population);
+        if let Some(first_front) = fronts.first() {
+            // Deduplicate by exact fitness pairs so we don't print repeated solutions.
+            let mut reps: Vec<usize> = first_front.clone();
+            reps.sort_by(|&a, &b| {
+                population[a]
+                    .fitness_values
+                    .0
+                    .total_cmp(&population[b].fitness_values.0)
+                    .then_with(|| {
+                        population[a]
+                            .fitness_values
+                            .1
+                            .total_cmp(&population[b].fitness_values.1)
+                    })
+            });
+
+            let mut unique: Vec<usize> = Vec::new();
+            let mut last_key: Option<(u64, u64)> = None;
+            for idx in reps {
+                let fv = population[idx].fitness_values;
+                let key = (fv.0.to_bits(), fv.1.to_bits());
+                if last_key == Some(key) {
+                    continue;
+                }
+                last_key = Some(key);
+                unique.push(idx);
+            }
+
+            println!(
+                "Final nondominated solutions (rank 1): {} (unique by fitness)",
+                unique.len()
+            );
+            for (k, &idx) in unique.iter().enumerate() {
+                let ch = &population[idx];
+                println!(
+                    "  Solution {}: ({:.3}, {:.3})",
+                    k + 1,
+                    ch.fitness_values.0,
+                    ch.fitness_values.1
+                );
+                let routes = self.decode_routes_node_ids(&ch.order_genes);
+                for (ri, route) in routes.iter().enumerate() {
+                    println!("    Route {}: {:?}", ri + 1, route);
+                }
+            }
         }
 
         population
@@ -697,6 +741,26 @@ impl<'a> NSGA<'a> {
         }
 
         Some(splits)
+    }
+
+    fn decode_routes_node_ids(&self, order_genes: &[u32]) -> Vec<Vec<u32>> {
+        // Decode routes in terms of original graph node IDs (including depot at start/end).
+        let Some(splits) = self.route_splits(order_genes) else {
+            return Vec::new();
+        };
+
+        let depot_id = self.order_index_to_id[&0];
+        let mut out: Vec<Vec<u32>> = Vec::with_capacity(splits.len());
+        for (s, e) in splits {
+            let mut route: Vec<u32> = Vec::with_capacity((e - s) + 2);
+            route.push(depot_id);
+            for &order_idx in &order_genes[s..e] {
+                route.push(self.order_index_to_id[&order_idx]);
+            }
+            route.push(depot_id);
+            out.push(route);
+        }
+        out
     }
 
     fn legs_from_order(&self, order_genes: &[u32]) -> Option<Vec<Vec<(u32, u32)>>> {
