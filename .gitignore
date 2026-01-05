@@ -1,6 +1,7 @@
 /target
 /art
 /out
+/xset
 Cargo.lock
 .zed/debug.json
 output.txt

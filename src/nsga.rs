@@ -1,11 +1,10 @@
 use rand::Rng;
 use rand::seq::SliceRandom;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::io::Write;
-use std::process::exit;
 
-use crate::complete_graph::CompleteGraph;
+use crate::graph::Graph;
 
 #[derive(Debug)]
 pub struct Chromosome {
@@ -13,7 +12,6 @@ pub struct Chromosome {
     /// For each ordered pair (u, v) (in the NSGA node-index space, incl depot=0),
     /// stores which candidate edge in `adjacency_matrix[u][v]` is chosen.
     /// Flattened row-major matrix of size `num_nodes * num_nodes`.
-    edge_choice: Vec<u16>,
     fitness_values: (f64, f64),
 
     crowding_distance: f64,
@@ -24,7 +22,6 @@ impl Clone for Chromosome {
     fn clone(&self) -> Self {
         Self {
             order_genes: self.order_genes.clone(),
-            edge_choice: self.edge_choice.clone(),
             fitness_values: self.fitness_values.clone(),
             crowding_distance: self.crowding_distance,
             rank: self.rank,
@@ -129,13 +126,9 @@ impl HvStall {
     }
 }
 
-pub struct NSGA<'a> {
-    complete_graph: CompleteGraph<'a>,
-    #[allow(dead_code)]
-    id_to_order_index: HashMap<u32, u32>,
-    order_index_to_id: HashMap<u32, u32>,
+pub struct NSGA {
+    graph: Graph,
 
-    goals: BTreeMap<u32, u32>,
     adjacency_matrix: Vec<Vec<Vec<u32>>>,
     num_nodes: usize,
     population_size: u32,
@@ -146,46 +139,33 @@ pub struct NSGA<'a> {
     p_mutation: f64,
 }
 
-impl<'a> NSGA<'a> {
-    pub fn new_parallel(
-        complete_graph: CompleteGraph<'a>,
+impl NSGA {
+    pub fn new(
+        graph: Graph,
         population_size: u32,
-        max_capacity: u32,
         p_crossover: f64,
         p_mutation: f64,
     ) -> Self {
         let mut id_to_order_index = HashMap::new();
         let mut order_index_to_id = HashMap::new();
-        let mut goals: BTreeMap<u32, u32> = BTreeMap::new();
+        let num_nodes = graph.get_num_nodes();
 
-        let depot: u32 = complete_graph.get_depot();
+        let depot: u32 = graph.get_depot();
         id_to_order_index.insert(depot, 0);
         order_index_to_id.insert(0, depot);
 
-        let init_goals: BTreeSet<(u32, u32)> = complete_graph.get_goals();
-        for (index, (node, demand)) in init_goals.iter().enumerate() {
-            let order_index = (index as u32) + 1;
-            id_to_order_index.insert(*node, order_index);
-            order_index_to_id.insert(order_index, *node);
-            goals.insert(order_index, *demand);
+        let mut adjacency_matrix = vec![vec![Vec::new(); num_nodes as usize]; num_nodes as usize];
+        for edge in graph.get_edges() {
+            let node1 = edge.get_source();
+            let node2 = edge.get_target();
+            adjacency_matrix[node1 as usize][node2 as usize].push(edge.get_id());
         }
 
-        let mut adjacency_matrix = vec![vec![Vec::new(); goals.len() + 1]; goals.len() + 1];
-        for edge in complete_graph.get_edges() {
-            let node1 = id_to_order_index[&edge.get_composite_nodes()[0]];
-            let node2 = id_to_order_index[&edge.get_composite_nodes().last().unwrap().clone()];
-            let edge_id = edge.get_id();
-            adjacency_matrix[node1 as usize][node2 as usize].push(edge_id);
-        }
-
-        let num_nodes = goals.len() + 1;
+        let max_capacity = graph.get_capacity();
         Self {
-            complete_graph,
-            id_to_order_index,
-            order_index_to_id,
-            goals,
+            graph,
             adjacency_matrix,
-            num_nodes,
+            num_nodes: num_nodes as usize,
             population_size,
             max_capacity,
             p_crossover,
@@ -205,7 +185,7 @@ impl<'a> NSGA<'a> {
         let child_population = self.produce_child_population(&population);
         population.extend(child_population);
 
-        let num_iterations = 1000;
+        let num_iterations = 100000;
 
         // External archive of nondominated objective pairs (minimization)
         let mut archive_front: Vec<(f64, f64)> = Vec::new();
@@ -300,7 +280,7 @@ impl<'a> NSGA<'a> {
                     ch.fitness_values.1
                 )
                 .ok();
-                let routes = self.decode_routes_node_ids(&ch.order_genes);
+                let routes = self.decode_routes(&ch.order_genes);
                 for (ri, route) in routes.iter().enumerate() {
                     writeln!(w, "    Route {}: {:?}", ri + 1, route).ok();
                 }
@@ -350,33 +330,16 @@ impl<'a> NSGA<'a> {
         let mut population = Vec::new();
         let mut rng = rand::rng();
         for _ in 0..self.population_size {
-            // Order node is a random permutation of ids from 1 to goals.len() + 1
-            let mut order_genes: Vec<u32> = (1..(self.goals.len() + 1) as u32).collect();
+            // Order node is a random permutation of ids from 1 to num_nodes
+            let mut order_genes: Vec<u32> = (1..self.num_nodes as u32).collect();
             // Shuffle the order genes
             order_genes.shuffle(&mut rng);
 
-            // For each (u,v), choose one candidate edge index into adjacency_matrix[u][v]
-            // (u == v is unused but kept for indexing simplicity).
-            let mut edge_choice = vec![0u16; self.num_nodes * self.num_nodes];
-            for u in 0..self.num_nodes {
-                for v in 0..self.num_nodes {
-                    if u == v {
-                        continue;
-                    }
-                    let edges = &self.adjacency_matrix[u][v];
-                    if edges.is_empty() {
-                        continue;
-                    }
-                    let k = rng.random_range(0..edges.len());
-                    edge_choice[u * self.num_nodes + v] = k as u16;
-                }
-            }
             // Compute the fitness values
-            let fitness_values = self.evaluate(&order_genes, &edge_choice);
+            let fitness_values = self.evaluate(&order_genes);
 
             population.push(Chromosome {
                 order_genes,
-                edge_choice,
                 fitness_values,
                 crowding_distance: 0.0,
                 rank: 0,
@@ -409,10 +372,10 @@ impl<'a> NSGA<'a> {
                 self.mutate(&mut c2);
             }
 
-            c1.fitness_values = self.evaluate(&c1.order_genes, &c1.edge_choice);
+            c1.fitness_values = self.evaluate(&c1.order_genes);
             children.push(c1);
             if children.len() < n {
-                c2.fitness_values = self.evaluate(&c2.order_genes, &c2.edge_choice);
+                c2.fitness_values = self.evaluate(&c2.order_genes);
                 children.push(c2);
             }
         }
@@ -420,7 +383,7 @@ impl<'a> NSGA<'a> {
         children
     }
 
-    fn tournament_select(&self, population: &'a Vec<Chromosome>) -> &'a Chromosome {
+    fn tournament_select<'a>(&self, population: &'a [Chromosome]) -> &'a Chromosome {
         let mut rng = rand::rng();
         let n = population.len();
 
@@ -637,14 +600,12 @@ impl<'a> NSGA<'a> {
 
         let mut child1 = p1.clone();
         child1.order_genes = c1;
-        child1.edge_choice = self.edge_choice_crossover_match_aware(&child1.order_genes, p1, p2);
         child1.fitness_values = (0.0, 0.0);
         child1.rank = 0;
         child1.crowding_distance = 0.0;
 
         let mut child2 = p2.clone();
         child2.order_genes = c2;
-        child2.edge_choice = self.edge_choice_crossover_match_aware(&child2.order_genes, p2, p1);
         child2.fitness_values = (0.0, 0.0);
         child2.rank = 0;
         child2.crowding_distance = 0.0;
@@ -718,9 +679,26 @@ impl<'a> NSGA<'a> {
             return;
         }
         v[i..=j].reverse();
+    }
 
-        // Route-aware edge-choice mutation: mutate only legs actually used by this chromosome.
-        self.edge_choice_mutation_route_aware(&chromosome.order_genes, &mut chromosome.edge_choice);
+    fn decode_routes(&self, order_genes: &[u32]) -> Vec<Vec<u32>> {
+        // Decode routes in terms of original graph node IDs (including depot at start/end).
+        let Some(splits) = self.route_splits(order_genes) else {
+            return Vec::new();
+        };
+
+        let depot_id = self.graph.get_depot() + 1;
+        let mut out: Vec<Vec<u32>> = Vec::with_capacity(splits.len());
+        for (s, e) in splits {
+            let mut route: Vec<u32> = Vec::with_capacity((e - s) + 2);
+            route.push(depot_id);
+            for &order_idx in &order_genes[s..e] {
+                route.push(order_idx + 1);
+            }
+            route.push(depot_id + 1);
+            out.push(route);
+        }
+        out
     }
 
     fn route_splits(&self, order_genes: &[u32]) -> Option<Vec<(usize, usize)>> {
@@ -736,7 +714,7 @@ impl<'a> NSGA<'a> {
 
             while end < n {
                 let node = order_genes[end];
-                let d = *self.goals.get(&node).unwrap();
+                let d = self.graph.get_demand(node);
                 if d > self.max_capacity {
                     return None;
                 }
@@ -757,26 +735,6 @@ impl<'a> NSGA<'a> {
         }
 
         Some(splits)
-    }
-
-    fn decode_routes_node_ids(&self, order_genes: &[u32]) -> Vec<Vec<u32>> {
-        // Decode routes in terms of original graph node IDs (including depot at start/end).
-        let Some(splits) = self.route_splits(order_genes) else {
-            return Vec::new();
-        };
-
-        let depot_id = self.order_index_to_id[&0];
-        let mut out: Vec<Vec<u32>> = Vec::with_capacity(splits.len());
-        for (s, e) in splits {
-            let mut route: Vec<u32> = Vec::with_capacity((e - s) + 2);
-            route.push(depot_id);
-            for &order_idx in &order_genes[s..e] {
-                route.push(self.order_index_to_id[&order_idx]);
-            }
-            route.push(depot_id);
-            out.push(route);
-        }
-        out
     }
 
     fn legs_from_order(&self, order_genes: &[u32]) -> Option<Vec<Vec<(u32, u32)>>> {
@@ -807,148 +765,8 @@ impl<'a> NSGA<'a> {
         Some(set)
     }
 
-    fn edge_choice_crossover_match_aware(
-        &self,
-        child_order: &[u32],
-        donor: &Chromosome,
-        base: &Chromosome,
-    ) -> Vec<u16> {
-        // Match-aware blocks:
-        // - Start from `base.edge_choice`
-        // - Decode child routes, and find contiguous stretches of child legs that also occur in `donor`
-        // - Copy edge choices for a few such blocks from donor into the child
-        let mut out = base.edge_choice.clone();
 
-        let Some(child_routes) = self.legs_from_order(child_order) else {
-            return out;
-        };
-        let Some(donor_legs) = self.parent_leg_set(donor) else {
-            return out;
-        };
-
-        #[derive(Clone)]
-        struct Seg {
-            route_idx: usize,
-            start: usize,
-            end: usize, // exclusive
-            len: usize,
-        }
-
-        // Collect maximal match segments per route.
-        let min_len: usize = 2;
-        let mut segs: Vec<Seg> = Vec::new();
-        for (ri, legs) in child_routes.iter().enumerate() {
-            let mut i = 0usize;
-            while i < legs.len() {
-                if !donor_legs.contains(&legs[i]) {
-                    i += 1;
-                    continue;
-                }
-                let start = i;
-                i += 1;
-                while i < legs.len() && donor_legs.contains(&legs[i]) {
-                    i += 1;
-                }
-                let end = i;
-                let len = end - start;
-                if len >= min_len {
-                    segs.push(Seg {
-                        route_idx: ri,
-                        start,
-                        end,
-                        len,
-                    });
-                }
-            }
-        }
-
-        if segs.is_empty() {
-            return out;
-        }
-
-        // Select up to a few segments, biased by their length (roulette-wheel).
-        let max_blocks: usize = 3;
-        let mut rng = rand::rng();
-        let mut chosen: Vec<Seg> = Vec::new();
-        let mut pool = segs;
-        let num = max_blocks.min(pool.len());
-
-        for _ in 0..num {
-            let total_w: usize = pool.iter().map(|s| s.len).sum();
-            if total_w == 0 {
-                break;
-            }
-            let mut pick = rng.random_range(0..total_w);
-            let mut idx = 0usize;
-            for (j, s) in pool.iter().enumerate() {
-                if pick < s.len {
-                    idx = j;
-                    break;
-                }
-                pick -= s.len;
-            }
-            chosen.push(pool.remove(idx));
-        }
-
-        // Apply chosen segments.
-        for seg in chosen {
-            let legs = &child_routes[seg.route_idx];
-            for &(u, v) in &legs[seg.start..seg.end] {
-                let u = u as usize;
-                let v = v as usize;
-                let candidates = &self.adjacency_matrix[u][v];
-                if candidates.is_empty() {
-                    continue;
-                }
-                let idx = u * self.num_nodes + v;
-                let k = donor.edge_choice[idx] as usize;
-                out[idx] = if k < candidates.len() { k as u16 } else { 0u16 };
-            }
-        }
-
-        out
-    }
-
-    fn edge_choice_mutation_route_aware(&self, order_genes: &[u32], edge_choice: &mut [u16]) {
-        // Mutate a small number of edge decisions on legs used by the decoded routes.
-        // This keeps mutation impactful while avoiding random noise on unused (u,v) pairs.
-        let Some(routes) = self.legs_from_order(order_genes) else {
-            return;
-        };
-
-        let mut legs: Vec<(u32, u32)> = Vec::new();
-        for r in routes {
-            legs.extend(r);
-        }
-        if legs.is_empty() {
-            return;
-        }
-
-        let mut rng = rand::rng();
-        let num_changes = usize::min(legs.len(), 1 + rng.random_range(0..=2)); // 1..=3
-
-        for _ in 0..num_changes {
-            let (u, v) = legs[rng.random_range(0..legs.len())];
-            let u = u as usize;
-            let v = v as usize;
-            let candidates = &self.adjacency_matrix[u][v];
-            if candidates.len() <= 1 {
-                continue;
-            }
-
-            let idx = u * self.num_nodes + v;
-            let cur = (edge_choice[idx] as usize).min(candidates.len() - 1);
-            let mut next = rng.random_range(0..candidates.len());
-            if candidates.len() > 1 {
-                while next == cur {
-                    next = rng.random_range(0..candidates.len());
-                }
-            }
-            edge_choice[idx] = next as u16;
-        }
-    }
-
-    fn evaluate(&self, order_genes: &Vec<u32>, edge_choice: &Vec<u16>) -> (f64, f64) {
+    fn evaluate(&self, order_genes: &Vec<u32>) -> (f64, f64) {
         // Evaluate the fitness values
         let mut route_start_index: u32 = 0;
         let n: u32 = order_genes.len() as u32;
@@ -958,23 +776,8 @@ impl<'a> NSGA<'a> {
         let add_leg = |from: u32, to: u32, total: &mut (f64, f64)| -> bool {
             let from_us = from as usize;
             let to_us = to as usize;
-            let candidates = &self.adjacency_matrix[from_us][to_us];
-            if candidates.is_empty() {
-                println!(
-                    "No edge from node {} to node {}",
-                    self.order_index_to_id[&from],
-                    self.order_index_to_id[&to]
-                );
-                exit(1);
-            }
-            let idx = from_us * self.num_nodes + to_us;
-            let k = edge_choice[idx] as usize;
-            if k >= candidates.len() {
-                // Shouldn't happen if mutation/crossover preserves ranges, but guard anyway.
-                return false;
-            }
-            let edge_id = candidates[k];
-            let edge_parameters = self.complete_graph.get_edge_parameters(edge_id);
+            let edge_id = self.adjacency_matrix[from_us][to_us][0];
+            let edge_parameters = self.graph.get_edge_parameters(edge_id);
             total.0 += edge_parameters.0;
             total.1 += edge_parameters.1;
             true
@@ -987,7 +790,7 @@ impl<'a> NSGA<'a> {
             // Build a single vehicle route as a maximal prefix that still fits capacity.
             while route_end_index < n {
                 let current_node = order_genes[route_end_index as usize];
-                let node_demand = *self.goals.get(&current_node).unwrap();
+                let node_demand = self.graph.get_demand(current_node);
 
                 // Infeasible instance / chromosome for CVRP: a single customer exceeds capacity.
                 // Return a dominated fitness so it won't survive selection.

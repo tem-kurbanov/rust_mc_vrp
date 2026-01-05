@@ -1,78 +1,237 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-struct Edge {
+#[derive(Clone)]
+pub struct Edge {
     id: u32,
     source: u32,
     target: u32,
     parameters: (f64, f64),
 }
 
+impl Edge {
+    pub fn get_id(&self) -> u32 {
+        self.id
+    }
+    pub fn get_source(&self) -> u32 {
+        self.source
+    }
+    pub fn get_target(&self) -> u32 {
+        self.target
+    }
+    pub fn get_parameters(&self) -> (f64, f64) {
+        self.parameters
+    }
+}
+
 pub struct Graph {
     num_nodes: u32,
     num_edges: u32,
     num_parameters: u32,
+    demands: HashMap<u32, u32>,
+
+    depot: u32,
+    capacity: u32,
 
     edges: Vec<Edge>,
     outgoing_edges: Vec<Vec<u32>>,
     incoming_edges: Vec<Vec<u32>>,
-    restructure_ids: HashMap<u32, u32>,
+}
+
+impl Clone for Graph {
+    fn clone(&self) -> Self {
+        Self {
+            num_nodes: self.num_nodes,
+            num_edges: self.num_edges,
+            num_parameters: self.num_parameters,
+            demands: self.demands.clone(),
+            depot: self.depot,
+            capacity: self.capacity,
+            edges: self.edges.clone(),
+            outgoing_edges: self.outgoing_edges.clone(),
+            incoming_edges: self.incoming_edges.clone(),
+        }
+    }
 }
 
 impl Graph {
 
     pub fn new(input_path: &str) -> io::Result<Self> {
-        let file = File::open(input_path).expect("Failed to open file");
-        let mut reader = BufReader::new(file);
-
-        let mut buf = String::new();
-        reader.read_line(&mut buf)?;
-        let mut buf = buf.trim().split(',');
-        // read "100,280" to num_nodes and num_edges
-        let num_nodes = buf.next().unwrap().parse::<u32>().unwrap();
-        let num_edges = buf.next().unwrap().parse::<u32>().unwrap();
-
         let num_parameters = 2;
+        let file = File::open(input_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
 
-        let mut edges = Vec::with_capacity(num_edges as usize);
+        // Parse header fields
+        let mut dimension = 0u32;
+        let mut capacity = 0u32;
+        let mut node_coords: Vec<(f64, f64)> = Vec::new();
+        let mut demands: HashMap<u32, u32> = HashMap::new();
+        let mut depot: Option<u32> = None;
+        let mut coords_read = 0usize;
 
-        let mut outgoing_edges: Vec<Vec<u32>> = vec![Vec::new(); num_nodes as usize];
-        let mut incoming_edges: Vec<Vec<u32>> = vec![Vec::new(); num_nodes as usize];
+        let mut section = String::new();
+        // Create RNG with time-based seed
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut rng: StdRng = SeedableRng::seed_from_u64(seed);
 
-        let mut buf = String::new();
-        reader.read_line(&mut buf)?;
+        while let Some(line) = lines.next() {
+            let line = line?;
+            let trimmed = line.trim();
 
-        let mut edge_id = 0;
-        for line_result in reader.lines() {
-            let line = line_result?;
-            let parts = line.trim().split(',').map(|n| {
-                let n = n.parse::<f64>().unwrap();
-                n
-            }).collect::<Vec<f64>>();
+            if trimmed.is_empty() {
+                continue;
+            }
 
-            let start = parts[0] as u32;
-            let end = parts[1] as u32;
-            let p1 = parts[2].max(1.0);
-            let p2 = parts[3].max(1.0);
-
-            edges.push(Edge{id: edge_id, source: start as u32, target: end as u32, parameters: (p1, p2)});
-            outgoing_edges[start as usize].push(edge_id);
-            incoming_edges[end as usize].push(edge_id);
-
-            edge_id += 1;
+            // Parse header fields
+            if trimmed.starts_with("DIMENSION") {
+                let parts: Vec<&str> = trimmed.split(':').collect();
+                if parts.len() >= 2 {
+                    dimension = parts[1].trim().parse().unwrap_or(0);
+                }
+            } else if trimmed.starts_with("CAPACITY") {
+                let parts: Vec<&str> = trimmed.split(':').collect();
+                if parts.len() >= 2 {
+                    capacity = parts[1].trim().parse().unwrap_or(0);
+                }
+            } else if trimmed == "NODE_COORD_SECTION" {
+                section = "NODE_COORD_SECTION".to_string();
+            } else if trimmed == "DEMAND_SECTION" {
+                section = "DEMAND_SECTION".to_string();
+            } else if trimmed == "DEPOT_SECTION" {
+                section = "DEPOT_SECTION".to_string();
+            } else if trimmed == "EOF" {
+                break;
+            } else if section == "NODE_COORD_SECTION" {
+                // Parse node coordinates: "id x y"
+                // IDs in file are 1-based, convert to 0-based
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    let file_id: u32 = parts[0].parse().unwrap_or(0);
+                    if file_id == 0 {
+                        continue; // Skip invalid IDs
+                    }
+                    let id = file_id - 1; // Convert to 0-based (file IDs start at 1)
+                    let x: f64 = parts[1].parse().unwrap_or(0.0);
+                    let y: f64 = parts[2].parse().unwrap_or(0.0);
+                    // Ensure we have enough space
+                    if id as usize >= node_coords.len() {
+                        node_coords.resize(id as usize + 1, (0.0, 0.0));
+                    }
+                    node_coords[id as usize] = (x, y);
+                    coords_read += 1;
+                }
+            } else if section == "DEMAND_SECTION" {
+                // Parse demands: "id demand"
+                // IDs in file are 1-based, convert to 0-based
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let file_id: u32 = parts[0].parse().unwrap_or(0);
+                    if file_id == 0 {
+                        continue; // Skip invalid IDs
+                    }
+                    let id = file_id - 1; // Convert to 0-based (file IDs start at 1)
+                    let demand: u32 = parts[1].parse().unwrap_or(0);
+                    demands.insert(id, demand);
+                }
+            } else if section == "DEPOT_SECTION" {
+                // Parse depot: "id" or "-1" to terminate
+                // IDs in file are 1-based, convert to 0-based
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 1 {
+                    let id_str = parts[0].trim();
+                    if id_str == "-1" {
+                        break;
+                    } else if let Ok(file_id) = id_str.parse::<u32>() {
+                        if file_id > 0 {
+                            let id = file_id - 1; // Convert to 0-based (file IDs start at 1)
+                            depot = Some(id);
+                        }
+                    }
+                }
+            }
         }
 
-        let restructure_ids = HashMap::new();
+        // Ensure node_coords is properly sized (should have dimension nodes, 0-indexed)
+        if node_coords.len() < dimension as usize {
+            node_coords.resize(dimension as usize, (0.0, 0.0));
+        }
+        
+        // Verify we read the expected number of node coordinates
+        if coords_read != dimension as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Expected {} node coordinates but found {}", dimension, coords_read),
+            ));
+        }
+        
+        // Verify depot is valid
+        if let Some(depot_id) = depot {
+            if depot_id >= dimension {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Depot ID {} is out of range (max: {})", depot_id, dimension - 1),
+                ));
+            }
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "No depot specified in DEPOT_SECTION",
+            ));
+        }
 
-        Ok(Self{
+        // Create complete graph: edges between all pairs of nodes
+        let num_nodes = dimension;
+        let mut edges = Vec::new();
+        let mut outgoing_edges = vec![Vec::new(); num_nodes as usize];
+        let mut incoming_edges = vec![Vec::new(); num_nodes as usize];
+        let mut edge_id = 0u32;
+
+        // Create edges for all pairs (complete graph)
+        for i in 0..num_nodes {
+            for j in 0..num_nodes {
+                if i != j {
+                    // Calculate Euclidean distance
+                    let (x1, y1) = node_coords[i as usize];
+                    let (x2, y2) = node_coords[j as usize];
+                    let distance = ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt();
+
+                    // Random number from 1 to 100
+                    let random_param = rng.random_range(1..=100) as f64;
+
+                    edges.push(Edge {
+                        id: edge_id,
+                        source: i,
+                        target: j,
+                        parameters: (distance, random_param),
+                    });
+
+                    outgoing_edges[i as usize].push(edge_id);
+                    incoming_edges[j as usize].push(edge_id);
+                    edge_id += 1;
+                }
+            }
+        }
+
+        let num_edges = edge_id;
+
+        Ok(Graph {
             num_nodes,
             num_edges,
             num_parameters,
+            demands,
+            depot: depot.unwrap(),
+            capacity,
             edges,
             outgoing_edges,
             incoming_edges,
-            restructure_ids
         })
     }
 
@@ -86,6 +245,18 @@ impl Graph {
 
     pub fn get_num_parameters(&self) -> u32 {
         self.num_parameters
+    }
+
+    pub fn get_demand(&self, node_id: u32) -> u32 {
+        self.demands[&node_id]
+    }
+
+    pub fn get_depot(&self) -> u32 {
+        self.depot
+    }
+
+    pub fn get_capacity(&self) -> u32 {
+        self.capacity
     }
 
     pub fn get_edge_points(&self, edge_id: u32) -> (u32, u32) {
@@ -104,44 +275,7 @@ impl Graph {
         &self.incoming_edges[node_id as usize]
     }
 
-    pub fn get_restructure_id(&self, node_id: u32) -> i32 {
-        if self.restructure_ids.contains_key(&node_id) {
-            self.restructure_ids[&node_id] as i32
-        } else {
-            -1
-        }
-    }
-
-    pub fn augment_graph(&mut self, goals: &HashSet<u32>) {
-        for g in goals {
-            let new_id = self.num_nodes;
-
-            for out_edge in &self.outgoing_edges[*g as usize] {
-                self.edges[*out_edge as usize].source = new_id;
-            }
-            for in_edge in &self.incoming_edges[*g as usize] {
-                self.edges[*in_edge as usize].target = new_id;
-            }
-
-            let new_out = self.outgoing_edges[*g as usize].to_vec();
-            let new_in = self.incoming_edges[*g as usize].to_vec();
-
-            self.outgoing_edges.push(new_out);
-            self.incoming_edges.push(new_in);
-
-            self.outgoing_edges[*g as usize] = vec![self.num_edges];
-            self.incoming_edges[*g as usize] = vec![self.num_edges + 1];
-
-            self.outgoing_edges[new_id as usize].push(self.num_edges + 1);
-            self.incoming_edges[new_id as usize].push(self.num_edges);
-
-            self.edges.push(Edge{id: self.num_edges, source: *g, target: new_id, parameters: (1.0, 1.0)});
-            self.edges.push(Edge{id: self.num_edges + 1, source: new_id, target: *g, parameters: (1.0, 1.0)});
-
-            self.num_nodes += 1;
-            self.num_edges += 2;
-
-            self.restructure_ids.insert(new_id, *g);
-        }
+    pub fn get_edges(&self) -> &Vec<Edge> {
+        &self.edges
     }
 }
