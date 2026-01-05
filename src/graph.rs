@@ -1,3 +1,24 @@
+//! TSPLIB-like CVRP instance parser and in-memory graph model.
+//!
+//! This module parses a subset of the Uchoa et al. X-set `.vrp` format:
+//! - `DIMENSION`: number of nodes (including depot)
+//! - `CAPACITY`: vehicle capacity
+//! - `NODE_COORD_SECTION`: node coordinates as `id x y`
+//! - `DEMAND_SECTION`: demands as `id demand`
+//! - `DEPOT_SECTION`: depot id list terminated by `-1`
+//!
+//! ### Indexing convention
+//! Files are typically **1-based** (node ids start at 1). Internally we use **0-based** ids.
+//! So file id `1` becomes internal id `0`, etc.
+//!
+//! ### Edges and objectives
+//! We materialize a **complete directed graph** (edges `i -> j` for all `i != j`).
+//! Each edge has **two parameters**:
+//! 1. Euclidean distance between node coordinates (objective 0)
+//! 2. A random integer in `[1, 100]` stored as `f64` (objective 1 / secondary cost)
+//!
+//! The solver currently uses the first edge variant (`[0]`) for each `(i, j)`.
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
@@ -5,6 +26,9 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Directed edge in the complete graph.
+///
+/// `parameters.0` is Euclidean distance, `parameters.1` is an additional random cost.
 #[derive(Clone)]
 pub struct Edge {
     id: u32,
@@ -14,20 +38,27 @@ pub struct Edge {
 }
 
 impl Edge {
+    /// Stable id of this edge (dense, starting at 0 in creation order).
     pub fn get_id(&self) -> u32 {
         self.id
     }
+    /// Source node id (0-based).
     pub fn get_source(&self) -> u32 {
         self.source
     }
+    /// Target node id (0-based).
     pub fn get_target(&self) -> u32 {
         self.target
     }
+    /// Returns `(distance, secondary_cost)`.
     pub fn get_parameters(&self) -> (f64, f64) {
         self.parameters
     }
 }
 
+/// Parsed CVRP instance and complete directed graph representation.
+///
+/// Nodes are indexed `0..num_nodes`, with `depot` being one of those ids.
 pub struct Graph {
     num_nodes: u32,
     num_edges: u32,
@@ -60,6 +91,12 @@ impl Clone for Graph {
 
 impl Graph {
 
+    /// Parse a TSPLIB-like `.vrp` file and build a complete directed graph.
+    ///
+    /// Notes:
+    /// - Input ids are converted from 1-based to 0-based.
+    /// - `NODE_COORD_SECTION` is stored in a dense vector by node id, so ids may be read out of order.
+    /// - Only the **first** depot id found is used.
     pub fn new(input_path: &str) -> io::Result<Self> {
         let num_parameters = 2;
         let file = File::open(input_path)?;
@@ -235,6 +272,7 @@ impl Graph {
         })
     }
 
+    /// Number of nodes (including depot).
     pub fn get_num_nodes(&self) -> u32 {
         self.num_nodes
     }
@@ -247,22 +285,29 @@ impl Graph {
         self.num_parameters
     }
 
+    /// Demand for a customer node id (0-based).
+    ///
+    /// Panics if the node id was not present in the `DEMAND_SECTION`.
     pub fn get_demand(&self, node_id: u32) -> u32 {
         self.demands[&node_id]
     }
 
+    /// Depot node id (0-based).
     pub fn get_depot(&self) -> u32 {
         self.depot
     }
 
+    /// Vehicle capacity from the instance file.
     pub fn get_capacity(&self) -> u32 {
         self.capacity
     }
 
+    /// Returns `(source, target)` for the given edge id.
     pub fn get_edge_points(&self, edge_id: u32) -> (u32, u32) {
         (self.edges[edge_id as usize].source, self.edges[edge_id as usize].target)
     }
 
+    /// Returns `(distance, secondary_cost)` for the given edge id.
     pub fn get_edge_parameters(&self, edge_id: u32) -> &(f64, f64) {
         &self.edges[edge_id as usize].parameters
     }
@@ -275,6 +320,7 @@ impl Graph {
         &self.incoming_edges[node_id as usize]
     }
 
+    /// All edges in the complete graph, in creation order.
     pub fn get_edges(&self) -> &Vec<Edge> {
         &self.edges
     }

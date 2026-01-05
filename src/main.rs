@@ -1,12 +1,22 @@
-use std::collections::BTreeSet;
+//! Binary entrypoint for `rust_mc_vrp`.
+//!
+//! This crate currently focuses on solving **Capacitated VRP (CVRP)** instances provided in a
+//! TSPLIB-like `.vrp` format (Uchoa et al. X-set style).
+//!
+//! The program:
+//! - parses a `.vrp` instance into an internal complete directed graph with 2 edge parameters
+//!   (distance + random secondary cost),
+//! - runs an NSGA-II style evolutionary search on a permutation encoding of customers,
+//! - logs convergence info and a final nondominated set summary.
+//!
+//! See `README.md` for usage and input format.
+
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::exit;
 
 use clap::Parser;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 
 // mod complete_graph;
 mod graph;
@@ -18,23 +28,29 @@ use nsga::NSGA;
 #[derive(Parser)]
 #[command(author, version, about = "Solve CVRP using NSGA-II")]
 struct Config {
-    #[arg(short, long, default_value = "xset/X-n134-k13.vrp", help = "Path to graph CSV (required)")]
+    /// Path to a TSPLIB-like `.vrp` file (Uchoa X-set style).
+    #[arg(short, long, default_value = "xset/X-n819-k171.vrp")]
     graph_path: String,
 
-    #[arg(short, long, default_value = "50", help = "Population size")]
+    /// Number of individuals in the population.
+    #[arg(short, long, default_value = "50")]
     population_size: u32,
 
 
-    #[arg(long, default_value = "0.5", help = "Crossover probability")]
+    /// Crossover probability.
+    #[arg(long, default_value = "0.5")]
     p_crossover: f64,
 
-    #[arg(long, default_value = "0.1", help = "Mutation probability")]
+    /// Mutation probability.
+    #[arg(long, default_value = "0.1")]
     p_mutation: f64,
 
-    #[arg(long, default_value = "1", help = "Number of experiments (independent runs) to execute")]
+    /// Number of independent runs to execute.
+    #[arg(long, default_value = "1")]
     runs: u32,
 
-    #[arg(long, help = "Write program output to this file (otherwise stdout)")]
+    /// Write program output to this file (otherwise stdout).
+    #[arg(long)]
     output: Option<PathBuf>,
 }
 
