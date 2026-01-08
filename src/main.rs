@@ -19,7 +19,12 @@ use nsga::NSGA;
 #[derive(Parser)]
 #[command(author, version, about = "Solve CVRP using NSGA-II")]
 struct Config {
-    #[arg(short, long, default_value = "out/500u1/vrp_multicriteria_n500_l0_m1_seed11394_graph0001.csv", help = "Path to graph CSV (required)")]
+    #[arg(
+        short,
+        long,
+        default_value = "art/u500/graph_000_n500_c0_u1_seed85402.csv",
+        help = "Path to graph CSV (required)"
+    )]
     graph_path: String,
 
     #[arg(short, long, default_value = "200", help = "Number of goals to randomly select (required)")]

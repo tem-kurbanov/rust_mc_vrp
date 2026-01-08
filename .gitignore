@@ -1,5 +1,4 @@
 /target
-/art
 /out
 Cargo.lock
 .zed/debug.json
