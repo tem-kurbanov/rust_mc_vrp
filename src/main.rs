@@ -29,7 +29,7 @@ use nsga::NSGA;
 #[command(author, version, about = "Solve CVRP using NSGA-II")]
 struct Config {
     /// Path to a TSPLIB-like `.vrp` file (Uchoa X-set style).
-    #[arg(short, long, default_value = "xset/X-n819-k171.vrp")]
+    #[arg(short, long, default_value = "xset/X-n106-k14.vrp")]
     graph_path: String,
 
     /// Number of individuals in the population.

@@ -259,6 +259,18 @@ impl Graph {
 
         let num_edges = edge_id;
 
+        // Print all edges with their parameters in an orderly manner
+        println!("Edge parameters:");
+        println!("Edge Start\tEdge End\tParameter 1 (Distance)\tParameter 2 (Random)");
+        for edge in &edges {
+            println!("{}\t\t{}\t\t{:.6}\t\t{:.0}", 
+                edge.source, 
+                edge.target, 
+                edge.parameters.0, 
+                edge.parameters.1
+            );
+        }
+
         Ok(Graph {
             num_nodes,
             num_edges,

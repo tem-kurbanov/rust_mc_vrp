@@ -316,10 +316,10 @@ impl NSGA {
                     ch.fitness_values.1
                 )
                 .ok();
-                // let routes = self.decode_routes(&ch.order_genes);
-                // for (ri, route) in routes.iter().enumerate() {
-                //     writeln!(w, "    Route {}: {:?}", ri + 1, route).ok();
-                // }
+                let routes = self.decode_routes(&ch.order_genes);
+                for (ri, route) in routes.iter().enumerate() {
+                    writeln!(w, "    Route {}: {:?}", ri + 1, route).ok();
+                }
             }
         }
 
@@ -982,7 +982,7 @@ impl NSGA {
             for &order_idx in &order_genes[s..e] {
                 route.push(order_idx + 1);
             }
-            route.push(depot_id + 1);
+            route.push(depot_id);
             out.push(route);
         }
         out
