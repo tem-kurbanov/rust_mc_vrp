@@ -161,7 +161,7 @@ impl HvStall {
 pub struct NSGA {
     graph: Graph,
 
-    adjacency_matrix: Vec<Vec<Vec<u32>>>,
+    adjacency_matrix: HashMap<u32, HashMap<u32, Vec<u32>>>,
     num_nodes: usize,
     population_size: u32,
 
@@ -194,11 +194,11 @@ impl NSGA {
         id_to_order_index.insert(depot, 0);
         order_index_to_id.insert(0, depot);
 
-        let mut adjacency_matrix = vec![vec![Vec::new(); num_nodes as usize]; num_nodes as usize];
+        let mut adjacency_matrix = HashMap::new();
         for edge in graph.get_edges() {
             let node1 = edge.get_source();
             let node2 = edge.get_target();
-            adjacency_matrix[node1 as usize][node2 as usize].push(edge.get_id());
+            adjacency_matrix.entry(node1).or_insert(HashMap::new()).entry(node2).or_insert(Vec::new()).push(edge.get_id());
         }
 
         let max_capacity = graph.get_capacity();
@@ -373,7 +373,12 @@ impl NSGA {
         let mut rng = rand::rng();
         for _ in 0..self.population_size {
             // Order node is a random permutation of ids from 1 to num_nodes
-            let mut order_genes: Vec<u32> = (1..self.num_nodes as u32).collect();
+            let mut order_genes: Vec<u32> = Vec::new();
+            for node in self.adjacency_matrix.keys() {
+                if *node != self.graph.get_depot() {
+                    order_genes.push(*node);
+                }
+            }
             // Shuffle the order genes
             order_genes.shuffle(&mut rng);
 
@@ -660,7 +665,7 @@ impl NSGA {
     }
 
     fn edge_distance(&self, from: u32, to: u32) -> f64 {
-        let edge_id = self.adjacency_matrix[from as usize][to as usize][0];
+        let edge_id = self.adjacency_matrix[&from][&to][0];
         self.graph.get_edge_parameters(edge_id).0
     }
 
@@ -696,12 +701,12 @@ impl NSGA {
         &self,
         info: &ParentInfo,
         current: u32,
-        visited: &[bool],
+        visited: &HashMap<u32, bool>,
     ) -> Option<u32> {
         if current == 0 {
             // depot: choose the first unvisited route-start in this parent
             for &s in &info.route_starts {
-                if (s as usize) < visited.len() && !visited[s as usize] {
+                if visited.contains_key(&s) && !visited[&s] {
                     return Some(s);
                 }
             }
@@ -713,7 +718,7 @@ impl NSGA {
 
         // first unvisited after current within same parent route
         for &node in info.order[(idx + 1)..end].iter() {
-            if (node as usize) < visited.len() && !visited[node as usize] {
+            if visited.contains_key(&node) && !visited[&node] {
                 return Some(node);
             }
         }
@@ -743,8 +748,11 @@ impl NSGA {
             return self.ox1(p1, p2);
         };
 
-        let mut visited: Vec<bool> = vec![false; self.num_nodes];
-        visited[0] = true; // depot
+        let mut visited: HashMap<u32, bool> = HashMap::new();
+        visited.insert(self.graph.get_depot(), true); // depot
+        for node in self.graph.get_goal_nodes() {
+            visited.insert(*node, false);
+        }
 
         let mut child: Vec<u32> = Vec::with_capacity(n_customers);
         let mut current: u32 = 0;
@@ -776,18 +784,18 @@ impl NSGA {
             // fallback: nearest feasible unvisited
             if chosen.is_none() {
                 let mut best: Option<(u32, f64)> = None;
-                for node in 1..(self.num_nodes as u32) {
-                    if visited[node as usize] {
+                for node in self.graph.get_goal_nodes() {
+                    if visited[&*node] {
                         continue;
                     }
-                    let d = self.graph.get_demand(node);
+                    let d = self.graph.get_demand(*node);
                     if d > remaining {
                         continue;
                     }
-                    let dist = self.edge_distance(current, node);
+                    let dist = self.edge_distance(current, *node);
                     match best {
-                        None => best = Some((node, dist)),
-                        Some((_, best_dist)) if dist < best_dist => best = Some((node, dist)),
+                        None => best = Some((*node, dist)),
+                        Some((_, best_dist)) if dist < best_dist => best = Some((*node, dist)),
                         _ => {}
                     }
                 }
@@ -802,7 +810,7 @@ impl NSGA {
             };
 
             // Append customer to permutation
-            visited[next as usize] = true;
+            visited.insert(next, true);
             used_capacity += self.graph.get_demand(next);
             child.push(next);
             current = next;
@@ -1082,7 +1090,7 @@ impl NSGA {
         let add_leg = |from: u32, to: u32, total: &mut (f64, f64)| -> bool {
             let from_us = from as usize;
             let to_us = to as usize;
-            let edge_id = self.adjacency_matrix[from_us][to_us][0];
+            let edge_id = self.adjacency_matrix[&(from_us as u32)][&(to_us as u32)][0];
             let edge_parameters = self.graph.get_edge_parameters(edge_id);
             total.0 += edge_parameters.0;
             total.1 += edge_parameters.1;

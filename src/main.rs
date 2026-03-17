@@ -43,7 +43,7 @@ struct Config {
 
     // Partiion of routes between vehicles
     // Format: "n1,n2,n3...;n6,n7,n8..."
-    #[arg(short, long)]
+    #[arg(long)]
     partition_routes: String,
 
     /// Crossover probability.
@@ -87,8 +87,13 @@ fn main() {
         exit(1);
     }
 
-    let partition_routes = cfg.partition_routes.split(';').map(|route| route.split(',').map(|n| n.parse::<usize>().unwrap()).collect::<Vec<usize>>()).collect::<Vec<Vec<usize>>>();
+    let mut partition_routes = cfg.partition_routes.split(';').map(|route| route.split(',').map(|n| n.parse::<usize>().unwrap()).collect::<Vec<usize>>()).collect::<Vec<Vec<usize>>>();
     // Make sure no vertex is in multiple routes
+    for route in &mut partition_routes {
+        for vertex in route {
+            *vertex -= 1;
+        }
+    }
     let mut tested_vertices = HashSet::new();
     for route in partition_routes {
         for vertex in route {

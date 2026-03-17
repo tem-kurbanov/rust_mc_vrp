@@ -19,7 +19,7 @@
 //!
 //! The solver currently uses the first edge variant (`[0]`) for each `(i, j)`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use rand::rngs::StdRng;
@@ -69,9 +69,11 @@ pub struct Graph {
     depot: u32,
     capacity: u32,
 
+    goal_nodes:HashSet<u32>,
+
     edges: Vec<Edge>,
-    outgoing_edges: Vec<Vec<u32>>,
-    incoming_edges: Vec<Vec<u32>>,
+    outgoing_edges: HashMap<usize, Vec<u32>>,
+    incoming_edges: HashMap<usize, Vec<u32>>,
 }
 
 impl Clone for Graph {
@@ -83,16 +85,17 @@ impl Clone for Graph {
             demands: self.demands.clone(),
             depot: self.depot,
             capacity: self.capacity,
+            goal_nodes: self.goal_nodes.clone(),
             edges: self.edges.clone(),
-            outgoing_edges: self.outgoing_edges.clone(),
-            incoming_edges: self.incoming_edges.clone(),
+            outgoing_edges: self.outgoing_edges.clone().into_iter().map(|(k, v)| (k, v.clone())).collect(),
+            incoming_edges: self.incoming_edges.clone().into_iter().map(|(k, v)| (k, v.clone())).collect(),
         }
     }
 }
 
 impl Debug for Graph {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Graph {{ num_nodes: {}, num_edges: {}, num_parameters: {}, demands: {:?}, depot: {}, capacity: {}, outgoing_edges: {:?}, incoming_edges: {:?}}}", self.num_nodes, self.num_edges, self.num_parameters, self.demands, self.depot, self.capacity, self.outgoing_edges, self.incoming_edges)?;
+        writeln!(f, "Graph {{ num_nodes: {}, num_edges: {}, num_parameters: {}, demands: {:?}, depot: {}, capacity: {}, goal_nodes: {:?}, outgoing_edges: {:?}, incoming_edges: {:?}}}", self.num_nodes, self.num_edges, self.num_parameters, self.demands, self.depot, self.capacity, self.goal_nodes, self.outgoing_edges, self.incoming_edges)?;
         writeln!(f, "Nodes:")?;
         for (node, demand) in self.demands.iter() {
             writeln!(f, "Node {}: demand {}", node, demand)?;
@@ -239,9 +242,14 @@ impl Graph {
         // Create complete graph: edges between all pairs of nodes
         let num_nodes = dimension;
         let mut edges = Vec::new();
-        let mut outgoing_edges = vec![Vec::new(); num_nodes as usize];
-        let mut incoming_edges = vec![Vec::new(); num_nodes as usize];
+        let mut outgoing_edges = HashMap::new();
+        let mut incoming_edges = HashMap::new();
         let mut edge_id = 0u32;
+
+        let mut goal_nodes = HashSet::new();
+        for n in 1..num_nodes {
+            goal_nodes.insert(n);
+        }
 
         // Create edges for all pairs (complete graph)
         for i in 0..num_nodes {
@@ -262,8 +270,8 @@ impl Graph {
                         parameters: (distance, random_param),
                     });
 
-                    outgoing_edges[i as usize].push(edge_id);
-                    incoming_edges[j as usize].push(edge_id);
+                    outgoing_edges.entry(i as usize).or_insert(Vec::new()).push(edge_id);
+                    incoming_edges.entry(j as usize).or_insert(Vec::new()).push(edge_id);
                     edge_id += 1;
                 }
             }
@@ -272,16 +280,16 @@ impl Graph {
         let num_edges = edge_id;
 
         // Print all edges with their parameters in an orderly manner
-        println!("Edge parameters:");
-        println!("Edge Start\tEdge End\tParameter 1 (Distance)\tParameter 2 (Random)");
-        for edge in &edges {
-            println!("{}\t\t{}\t\t{:.6}\t\t{:.0}", 
-                edge.source, 
-                edge.target, 
-                edge.parameters.0, 
-                edge.parameters.1
-            );
-        }
+        // println!("Edge parameters:");
+        // println!("Edge Start\tEdge End\tParameter 1 (Distance)\tParameter 2 (Random)");
+        // for edge in &edges {
+        //     println!("{}\t\t{}\t\t{:.6}\t\t{:.0}", 
+        //         edge.source, 
+        //         edge.target, 
+        //         edge.parameters.0, 
+        //         edge.parameters.1
+        //     );
+        // }
 
         Ok(Graph {
             num_nodes,
@@ -290,6 +298,7 @@ impl Graph {
             demands,
             depot: depot.unwrap(),
             capacity,
+            goal_nodes,
             edges,
             outgoing_edges,
             incoming_edges,
@@ -302,22 +311,28 @@ impl Graph {
         let depot = original_graph.get_depot();
         let mut demands = HashMap::new();
         let mut edges = Vec::new();
-        let mut outgoing_edges: Vec<Vec<u32>> = vec![Vec::new(); route.len() as usize];
-        let mut incoming_edges: Vec<Vec<u32>> = vec![Vec::new(); route.len() as usize];
+        let mut outgoing_edges: HashMap<usize, Vec<u32>> = HashMap::new();
+        let mut incoming_edges: HashMap<usize, Vec<u32>> = HashMap::new();
+
+        let mut goal_nodes = HashSet::new();
 
         for node in route {
-            demands.insert(*node as u32, original_graph.get_demand(*node as u32));
+            demands.insert((*node as u32) - 1, original_graph.get_demand((*node as u32) - 1));
+            goal_nodes.insert((*node as u32) - 1);
         }
 
         demands.insert(depot, 0);
-
+        let mut edge_id = 0;
         for edge in original_graph.get_edges() {
             let source = edge.get_source();
             let target = edge.get_target();
             if demands.contains_key(&source) && demands.contains_key(&target) {
-                edges.push(edge.clone());
-                outgoing_edges[edge.get_source() as usize].push(edge.get_id());
-                incoming_edges[edge.get_target() as usize].push(edge.get_id());
+                let mut match_edge = edge.clone();
+                match_edge.id = edge_id;
+                edges.push(match_edge);
+                outgoing_edges.entry(edge.get_source() as usize).or_insert(Vec::new()).push(edge_id);
+                incoming_edges.entry(edge.get_target() as usize).or_insert(Vec::new()).push(edge_id);
+                edge_id += 1;
             }
         }
 
@@ -328,6 +343,7 @@ impl Graph {
             demands,
             depot,
             capacity,
+            goal_nodes,
             edges,
             outgoing_edges,
             incoming_edges,
@@ -376,15 +392,19 @@ impl Graph {
     }
 
     pub fn get_outgoing_edges(&self, node_id: u32) -> &Vec<u32> {
-        &self.outgoing_edges[node_id as usize]
+        &self.outgoing_edges[&(node_id as usize)]
     }
 
     pub fn get_incoming_edges(&self, node_id: u32) -> &Vec<u32> {
-        &self.incoming_edges[node_id as usize]
+        &self.incoming_edges[&(node_id as usize)]
     }
 
     /// All edges in the complete graph, in creation order.
     pub fn get_edges(&self) -> &Vec<Edge> {
         &self.edges
+    }
+
+    pub fn get_goal_nodes(&self) -> &HashSet<u32> {
+        &self.goal_nodes
     }
 }
