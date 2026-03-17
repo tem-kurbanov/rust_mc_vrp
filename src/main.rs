@@ -15,7 +15,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::exit;
-
+use std::collections::HashSet;
 use clap::Parser;
 
 // mod complete_graph;
@@ -36,6 +36,15 @@ struct Config {
     #[arg(short, long, default_value = "50")]
     population_size: u32,
 
+    /// Optional hard upper bound on the number of vehicles (routes).
+    /// If omitted, the solver may use as many vehicles as capacity requires.
+    #[arg(long)]
+    max_vehicles: Option<usize>,
+
+    // Partiion of routes between vehicles
+    // Format: "n1,n2,n3...;n6,n7,n8..."
+    #[arg(short, long)]
+    partition_routes: String,
 
     /// Crossover probability.
     #[arg(long, default_value = "0.5")]
@@ -78,6 +87,30 @@ fn main() {
         exit(1);
     }
 
+    let partition_routes = cfg.partition_routes.split(';').map(|route| route.split(',').map(|n| n.parse::<usize>().unwrap()).collect::<Vec<usize>>()).collect::<Vec<Vec<usize>>>();
+    // Make sure no vertex is in multiple routes
+    let mut tested_vertices = HashSet::new();
+    for route in partition_routes {
+        for vertex in route {
+            if tested_vertices.contains(&vertex) {
+                eprintln!("Vertex {} is in multiple routes", vertex);
+                exit(1);
+            }
+            tested_vertices.insert(vertex);
+        }
+    }
+    // Make sure all vertices are in at least one route
+    for vertex in 0..num_nodes {
+        // Depot is not in any route
+        if vertex == original_graph.get_depot() as usize {
+            continue;
+        }
+        if !tested_vertices.contains(&vertex) {
+            eprintln!("Vertex {} is not in any route", vertex);
+            exit(1);
+        }
+    }
+
     if let Some(path) = &cfg.output {
         let file = match File::create(path) {
             Ok(f) => f,
@@ -108,6 +141,13 @@ fn run_experiments<W: Write>(
         writeln!(w, "Graph: {}", cfg.graph_path).ok();
         writeln!(w, "Number of graph nodes: {}", num_nodes).ok();
 
+        // For every route, create a complete subgraph with the vertices in the route and the depot
+        let partition_routes = cfg.partition_routes.split(';').map(|route| route.split(',').map(|n| n.parse::<usize>().unwrap()).collect::<Vec<usize>>()).collect::<Vec<Vec<usize>>>();
+        let mut subgraphs = Vec::new();
+        for route in partition_routes {
+            let subgraph = Graph::new_subgraph(&original_graph, &route);
+            subgraphs.push(subgraph);
+        }
 
         writeln!(
             w,
@@ -116,16 +156,13 @@ fn run_experiments<W: Write>(
         )
         .ok();
 
-        // Create NSGA instance
-        let nsga = NSGA::new(
-            original_graph.clone(),
-            cfg.population_size,
-            cfg.p_crossover,
-            cfg.p_mutation,
-    );
-
-        // Solve CVRP (solver logs to `w`)
-        let _population = nsga.solve_capacitated_vrp_with_writer(w);
-        writeln!(w).ok();
+        for subgraph in subgraphs {
+            writeln!(w, "Subgraph: {:?}", subgraph).ok();
+            // Create NSGA instance
+            let nsga = NSGA::new(subgraph, cfg.population_size, cfg.p_crossover, cfg.p_mutation, Some(1));
+            // Solve CVRP (solver logs to `w`)
+            let _population = nsga.solve_capacitated_vrp_with_writer(w);
+            writeln!(w).ok();
+        }
     }
 }

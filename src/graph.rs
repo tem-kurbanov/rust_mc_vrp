@@ -25,6 +25,7 @@ use std::io::{self, BufRead, BufReader};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::fmt::{self, Debug};
 
 /// Directed edge in the complete graph.
 ///
@@ -86,6 +87,17 @@ impl Clone for Graph {
             outgoing_edges: self.outgoing_edges.clone(),
             incoming_edges: self.incoming_edges.clone(),
         }
+    }
+}
+
+impl Debug for Graph {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Graph {{ num_nodes: {}, num_edges: {}, num_parameters: {}, demands: {:?}, depot: {}, capacity: {}, outgoing_edges: {:?}, incoming_edges: {:?}}}", self.num_nodes, self.num_edges, self.num_parameters, self.demands, self.depot, self.capacity, self.outgoing_edges, self.incoming_edges)?;
+        writeln!(f, "Nodes:")?;
+        for (node, demand) in self.demands.iter() {
+            writeln!(f, "Node {}: demand {}", node, demand)?;
+        }
+        Ok(())
     }
 }
 
@@ -282,6 +294,45 @@ impl Graph {
             outgoing_edges,
             incoming_edges,
         })
+    }
+
+    pub fn new_subgraph(original_graph: &Graph, route: &Vec<usize>) -> Self {
+        let num_parameters = original_graph.get_num_parameters();
+        let capacity = original_graph.get_capacity();
+        let depot = original_graph.get_depot();
+        let mut demands = HashMap::new();
+        let mut edges = Vec::new();
+        let mut outgoing_edges: Vec<Vec<u32>> = vec![Vec::new(); route.len() as usize];
+        let mut incoming_edges: Vec<Vec<u32>> = vec![Vec::new(); route.len() as usize];
+
+        for node in route {
+            demands.insert(*node as u32, original_graph.get_demand(*node as u32));
+        }
+
+        demands.insert(depot, 0);
+
+        for edge in original_graph.get_edges() {
+            let source = edge.get_source();
+            let target = edge.get_target();
+            if demands.contains_key(&source) && demands.contains_key(&target) {
+                edges.push(edge.clone());
+                outgoing_edges[edge.get_source() as usize].push(edge.get_id());
+                incoming_edges[edge.get_target() as usize].push(edge.get_id());
+            }
+        }
+
+        return Graph {
+            num_nodes: route.len() as u32 + 1,
+            num_edges: edges.len() as u32,
+            num_parameters,
+            demands,
+            depot,
+            capacity,
+            edges,
+            outgoing_edges,
+            incoming_edges,
+        };
+
     }
 
     /// Number of nodes (including depot).

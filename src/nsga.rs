@@ -166,6 +166,10 @@ pub struct NSGA {
     population_size: u32,
 
     max_capacity: u32,
+    /// Optional hard upper bound on the number of vehicle routes.
+    /// If `None`, the solver may use as many vehicles as needed (capacity-driven).
+    /// If `Some(k)`, any chromosome that requires more than `k` routes is treated as infeasible.
+    max_vehicles: Option<usize>,
 
     p_crossover: f64,
     p_mutation: f64,
@@ -180,6 +184,7 @@ impl NSGA {
         population_size: u32,
         p_crossover: f64,
         p_mutation: f64,
+        max_vehicles: Option<usize>,
     ) -> Self {
         let mut id_to_order_index = HashMap::new();
         let mut order_index_to_id = HashMap::new();
@@ -203,6 +208,7 @@ impl NSGA {
             num_nodes: num_nodes as usize,
             population_size,
             max_capacity,
+            max_vehicles,
             p_crossover,
             p_mutation,
         }
@@ -994,6 +1000,7 @@ impl NSGA {
         let n = order_genes.len();
         let mut splits: Vec<(usize, usize)> = Vec::new();
         let mut start = 0usize;
+        let mut route_count: usize = 0;
 
         while start < n {
             let mut cap: u32 = 0;
@@ -1018,6 +1025,14 @@ impl NSGA {
             }
 
             splits.push((start, end));
+            route_count += 1;
+
+            if let Some(max_routes) = self.max_vehicles {
+                if route_count > max_routes {
+                    return None;
+                }
+            }
+
             start = end;
         }
 
@@ -1062,6 +1077,7 @@ impl NSGA {
         let n: u32 = order_genes.len() as u32;
 
         let mut total_parameters = (0.0, 0.0);
+        let mut routes_used: usize = 0;
 
         let add_leg = |from: u32, to: u32, total: &mut (f64, f64)| -> bool {
             let from_us = from as usize;
@@ -1108,6 +1124,13 @@ impl NSGA {
             }
             if !add_leg(prev_node, 0, &mut total_parameters) {
                 return (f64::INFINITY, f64::INFINITY);
+            }
+
+            routes_used += 1;
+            if let Some(max_routes) = self.max_vehicles {
+                if routes_used > max_routes {
+                    return (f64::INFINITY, f64::INFINITY);
+                }
             }
 
             route_start_index = route_end_index;
