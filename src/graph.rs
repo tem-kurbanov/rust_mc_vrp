@@ -18,10 +18,17 @@
 //! 2. A random integer in `[1, 100]` stored as `f64` (objective 1 / secondary cost)
 //!
 //! The solver currently uses the first edge variant (`[0]`) for each `(i, j)`.
+//!
+//! ### JSON instances
+//! Precomputed graphs (fixed secondary costs) can be loaded with [`Graph::from_json_path`], matching
+//! the format emitted by `python_mc_vrp/scripts/export_xset_graphs.py`.
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
+use std::path::Path;
+
+use serde::Deserialize;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,6 +61,34 @@ impl Edge {
     pub fn get_parameters(&self) -> (f64, f64) {
         self.parameters
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonGraphFile {
+    #[serde(default)]
+    #[allow(dead_code)]
+    instance_name: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    seed: Option<u64>,
+    num_nodes: u32,
+    #[serde(default)]
+    num_edges: Option<u32>,
+    #[serde(default)]
+    num_parameters: Option<u32>,
+    capacity: u32,
+    depot: u32,
+    demands: HashMap<String, u32>,
+    edges: Vec<JsonEdgeFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonEdgeFile {
+    id: u32,
+    source: u32,
+    target: u32,
+    distance: f64,
+    random_cost: u32,
 }
 
 /// Parsed CVRP instance and complete directed graph representation.
@@ -322,6 +357,120 @@ impl Graph {
     /// Returns `(distance, secondary_cost)` for the given edge id.
     pub fn get_edge_parameters(&self, edge_id: u32) -> &(f64, f64) {
         &self.edges[edge_id as usize].parameters
+    }
+
+    /// Load a graph from JSON as written by `python_mc_vrp/scripts/export_xset_graphs.py`
+    /// (`data/xset_graphs/*.json`).
+    ///
+    /// Schema: `num_nodes`, `capacity`, `depot` (0-based), `demands` (object with decimal string
+    /// keys), `edges`: `[{ "id", "source", "target", "distance", "random_cost" }, ...]`.
+    pub fn from_json_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let path = path.as_ref();
+        let mut file = File::open(path)?;
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)?;
+        Self::from_json_str(&buf).map_err(|msg| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} (path: {})", msg, path.display()),
+            )
+        })
+    }
+
+    /// Same as [`Graph::from_json_path`] but reads from a JSON string.
+    pub fn from_json_str(json: &str) -> Result<Self, String> {
+        let file: JsonGraphFile = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        Self::from_json_graph_file(file)
+    }
+
+    fn from_json_graph_file(file: JsonGraphFile) -> Result<Self, String> {
+        let num_nodes = file.num_nodes;
+        if num_nodes == 0 {
+            return Err("num_nodes must be > 0".into());
+        }
+        if file.depot >= num_nodes {
+            return Err(format!(
+                "depot {} is out of range for num_nodes {}",
+                file.depot, num_nodes
+            ));
+        }
+
+        let expected_edges = (num_nodes as usize).saturating_mul(num_nodes.saturating_sub(1) as usize);
+        if file.edges.len() != expected_edges {
+            return Err(format!(
+                "expected {} edges for complete digraph on {} nodes, got {}",
+                expected_edges,
+                num_nodes,
+                file.edges.len()
+            ));
+        }
+
+        let num_parameters = file.num_parameters.unwrap_or(2);
+
+        let mut demands: HashMap<u32, u32> = HashMap::with_capacity(num_nodes as usize);
+        for i in 0..num_nodes {
+            let key = i.to_string();
+            let d = file
+                .demands
+                .get(&key)
+                .copied()
+                .ok_or_else(|| format!("missing demand for node {}", i))?;
+            demands.insert(i, d);
+        }
+
+        let mut edges: Vec<Edge> = Vec::with_capacity(expected_edges);
+        let mut outgoing_edges = vec![Vec::new(); num_nodes as usize];
+        let mut incoming_edges = vec![Vec::new(); num_nodes as usize];
+
+        for (idx, je) in file.edges.iter().enumerate() {
+            if je.id as usize != idx {
+                return Err(format!(
+                    "edge id mismatch at position {}: expected {}, got {}",
+                    idx, idx, je.id
+                ));
+            }
+            if je.source >= num_nodes || je.target >= num_nodes {
+                return Err(format!(
+                    "edge {} has invalid endpoints ({}, {}) for num_nodes {}",
+                    je.id, je.source, je.target, num_nodes
+                ));
+            }
+            if je.source == je.target {
+                return Err(format!("edge {} is a self-loop", je.id));
+            }
+
+            let random_f = je.random_cost as f64;
+            edges.push(Edge {
+                id: je.id,
+                source: je.source,
+                target: je.target,
+                parameters: (je.distance, random_f),
+            });
+            outgoing_edges[je.source as usize].push(je.id);
+            incoming_edges[je.target as usize].push(je.id);
+        }
+
+        let num_edges = edges.len() as u32;
+        if let Some(ne) = file.num_edges {
+            if ne != num_edges {
+                return Err(format!(
+                    "num_edges field {} does not match edge list length {}",
+                    ne, num_edges
+                ));
+            }
+        }
+
+        Ok(Graph {
+            num_nodes,
+            num_edges,
+            num_parameters,
+            demands,
+            depot: file.depot,
+            capacity: file.capacity,
+            edges,
+            outgoing_edges,
+            incoming_edges,
+        })
     }
 
     pub fn get_outgoing_edges(&self, node_id: u32) -> &Vec<u32> {

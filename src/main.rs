@@ -28,7 +28,7 @@ use nsga::NSGA;
 #[derive(Parser)]
 #[command(author, version, about = "Solve CVRP using NSGA-II")]
 struct Config {
-    /// Path to a TSPLIB-like `.vrp` file (Uchoa X-set style).
+    /// Path to a TSPLIB-like `.vrp` file or a graph `.json` from `export_xset_graphs.py`.
     #[arg(short, long, default_value = "xset/X-n106-k14.vrp")]
     graph_path: String,
 
@@ -63,12 +63,22 @@ fn main() {
         exit(1);
     }
 
-    // Read original graph
-    let original_graph = match Graph::new(&cfg.graph_path) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("Failed to open graph '{}': {}", cfg.graph_path, e);
-            exit(1);
+    // Read original graph (.json from data/xset_graphs or legacy .vrp)
+    let original_graph = if cfg.graph_path.to_ascii_lowercase().ends_with(".json") {
+        match Graph::from_json_path(&cfg.graph_path) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("Failed to load JSON graph '{}': {}", cfg.graph_path, e);
+                exit(1);
+            }
+        }
+    } else {
+        match Graph::new(&cfg.graph_path) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("Failed to open graph '{}': {}", cfg.graph_path, e);
+                exit(1);
+            }
         }
     };
 
