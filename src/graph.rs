@@ -19,11 +19,11 @@
 //!
 //! The solver currently uses the first edge variant (`[0]`) for each `(i, j)`.
 
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Directed edge in the complete graph.
@@ -90,7 +90,6 @@ impl Clone for Graph {
 }
 
 impl Graph {
-
     /// Parse a TSPLIB-like `.vrp` file and build a complete directed graph.
     ///
     /// Notes:
@@ -200,21 +199,28 @@ impl Graph {
         if node_coords.len() < dimension as usize {
             node_coords.resize(dimension as usize, (0.0, 0.0));
         }
-        
+
         // Verify we read the expected number of node coordinates
         if coords_read != dimension as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Expected {} node coordinates but found {}", dimension, coords_read),
+                format!(
+                    "Expected {} node coordinates but found {}",
+                    dimension, coords_read
+                ),
             ));
         }
-        
+
         // Verify depot is valid
         if let Some(depot_id) = depot {
             if depot_id >= dimension {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("Depot ID {} is out of range (max: {})", depot_id, dimension - 1),
+                    format!(
+                        "Depot ID {} is out of range (max: {})",
+                        depot_id,
+                        dimension - 1
+                    ),
                 ));
             }
         } else {
@@ -260,16 +266,14 @@ impl Graph {
         let num_edges = edge_id;
 
         // Print all edges with their parameters in an orderly manner
-        println!("Edge parameters:");
-        println!("Edge Start\tEdge End\tParameter 1 (Distance)\tParameter 2 (Random)");
-        for edge in &edges {
-            println!("{}\t\t{}\t\t{:.6}\t\t{:.0}", 
-                edge.source, 
-                edge.target, 
-                edge.parameters.0, 
-                edge.parameters.1
-            );
-        }
+        // println!("Edge parameters:");
+        // println!("Edge Start\tEdge End\tParameter 1 (Distance)\tParameter 2 (Random)");
+        // for edge in &edges {
+        //     println!(
+        //         "{}\t\t{}\t\t{:.6}\t\t{:.0}",
+        //         edge.source, edge.target, edge.parameters.0, edge.parameters.1
+        //     );
+        // }
 
         Ok(Graph {
             num_nodes,
@@ -316,7 +320,10 @@ impl Graph {
 
     /// Returns `(source, target)` for the given edge id.
     pub fn get_edge_points(&self, edge_id: u32) -> (u32, u32) {
-        (self.edges[edge_id as usize].source, self.edges[edge_id as usize].target)
+        (
+            self.edges[edge_id as usize].source,
+            self.edges[edge_id as usize].target,
+        )
     }
 
     /// Returns `(distance, secondary_cost)` for the given edge id.

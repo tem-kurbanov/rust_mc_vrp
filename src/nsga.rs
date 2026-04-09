@@ -26,6 +26,21 @@ use std::io::Write;
 
 use crate::graph::Graph;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub enum RelocateMode {
+    Cheap,
+    BestNormalized,
+}
+
+impl RelocateMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cheap => "cheap",
+            Self::BestNormalized => "best-normalized",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ParentInfo {
     /// Parent permutation (customers only, no depot marker)
@@ -169,6 +184,9 @@ pub struct NSGA {
 
     p_crossover: f64,
     p_mutation: f64,
+    relocate_mode: RelocateMode,
+    init_random_pct: u32,
+    init_best_insertion_pct: u32,
 }
 
 impl NSGA {
@@ -180,6 +198,9 @@ impl NSGA {
         population_size: u32,
         p_crossover: f64,
         p_mutation: f64,
+        relocate_mode: RelocateMode,
+        init_random_pct: u32,
+        init_best_insertion_pct: u32,
     ) -> Self {
         let mut id_to_order_index = HashMap::new();
         let mut order_index_to_id = HashMap::new();
@@ -205,6 +226,9 @@ impl NSGA {
             max_capacity,
             p_crossover,
             p_mutation,
+            relocate_mode,
+            init_random_pct,
+            init_best_insertion_pct,
         }
     }
 
@@ -362,18 +386,13 @@ impl NSGA {
     }
 
     fn generate_initial_population(&self) -> Vec<Chromosome> {
-        // Generate random initial population according to the population size
-        let mut population = Vec::new();
+        let mut population = Vec::with_capacity(self.population_size as usize);
         let mut rng = rand::rng();
-        for _ in 0..self.population_size {
-            // Order node is a random permutation of ids from 1 to num_nodes
-            let mut order_genes: Vec<u32> = (1..self.num_nodes as u32).collect();
-            // Shuffle the order genes
-            order_genes.shuffle(&mut rng);
+        let counts = self.allocate_initialization_counts();
 
-            // Compute the fitness values
+        for _ in 0..counts.0 {
+            let order_genes = self.generate_random_order(&mut rng);
             let fitness_values = self.evaluate(&order_genes);
-
             population.push(Chromosome {
                 order_genes,
                 fitness_values,
@@ -382,7 +401,81 @@ impl NSGA {
             });
         }
 
+        for _ in 0..counts.1 {
+            let order_genes = self.generate_best_insertion_order(&mut rng);
+            let fitness_values = self.evaluate(&order_genes);
+            population.push(Chromosome {
+                order_genes,
+                fitness_values,
+                crowding_distance: 0.0,
+                rank: 0,
+            });
+        }
+
+        population.shuffle(&mut rng);
         population
+    }
+
+    fn allocate_initialization_counts(&self) -> (usize, usize) {
+        let total = self.population_size as usize;
+        let exact_random = (self.init_random_pct as f64 * total as f64) / 100.0;
+        let exact_best = (self.init_best_insertion_pct as f64 * total as f64) / 100.0;
+
+        let mut random_count = exact_random.floor() as usize;
+        let mut best_count = exact_best.floor() as usize;
+        let assigned = random_count + best_count;
+
+        if assigned < total {
+            let random_frac = exact_random - random_count as f64;
+            let best_frac = exact_best - best_count as f64;
+            if best_frac > random_frac {
+                best_count += total - assigned;
+            } else {
+                random_count += total - assigned;
+            }
+        }
+
+        (random_count, best_count)
+    }
+
+    fn generate_random_order<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec<u32> {
+        let mut order_genes: Vec<u32> = (1..self.num_nodes as u32).collect();
+        order_genes.shuffle(rng);
+        order_genes
+    }
+
+    fn generate_best_insertion_order<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec<u32> {
+        let mut unvisited: Vec<u32> = (1..self.num_nodes as u32).collect();
+        let mut routes: Vec<Vec<u32>> = Vec::new();
+        let mut route_loads: Vec<u32> = Vec::new();
+
+        while !unvisited.is_empty() {
+            let pick = rng.random_range(0..unvisited.len());
+            let node = unvisited.swap_remove(pick);
+            let demand = self.graph.get_demand(node);
+
+            let feasible_routes: Vec<usize> = route_loads
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, &load)| (load + demand <= self.max_capacity).then_some(idx))
+                .collect();
+
+            let create_new_route = feasible_routes.is_empty()
+                || rng.random_range(0..=feasible_routes.len()) == feasible_routes.len();
+
+            if create_new_route {
+                routes.push(vec![node]);
+                route_loads.push(demand);
+                continue;
+            }
+
+            let route_idx = feasible_routes[rng.random_range(0..feasible_routes.len())];
+            let insert_pos = self.best_insert_position_in_route(&routes[route_idx], node);
+            routes[route_idx].insert(insert_pos, node);
+            route_loads[route_idx] += demand;
+        }
+
+        routes.into_iter().flatten().collect()
     }
 
     fn produce_child_population(&self, parents: &Vec<Chromosome>) -> Vec<Chromosome> {
@@ -601,7 +694,11 @@ impl NSGA {
         fronts
     }
 
-    fn select_population(&self, population: &[Chromosome], fronts: &[Vec<usize>]) -> Vec<Chromosome> {
+    fn select_population(
+        &self,
+        population: &[Chromosome],
+        fronts: &[Vec<usize>],
+    ) -> Vec<Chromosome> {
         let target = self.population_size as usize;
         let mut new_population = Vec::with_capacity(target);
 
@@ -623,7 +720,11 @@ impl NSGA {
                     .crowding_distance
                     .total_cmp(&population[a].crowding_distance)
             });
-            new_population.extend(ord.into_iter().take(remaining).map(|i| population[i].clone()));
+            new_population.extend(
+                ord.into_iter()
+                    .take(remaining)
+                    .map(|i| population[i].clone()),
+            );
             break;
         }
 
@@ -654,8 +755,233 @@ impl NSGA {
     }
 
     fn edge_distance(&self, from: u32, to: u32) -> f64 {
+        self.edge_costs_or_zero(from, to).0
+    }
+
+    fn edge_costs_or_zero(&self, from: u32, to: u32) -> (f64, f64) {
+        if from == to {
+            return (0.0, 0.0);
+        }
+
         let edge_id = self.adjacency_matrix[from as usize][to as usize][0];
-        self.graph.get_edge_parameters(edge_id).0
+        *self.graph.get_edge_parameters(edge_id)
+    }
+
+    fn adjusted_route_bounds_after_removal(
+        &self,
+        route: (usize, usize),
+        removed_idx: usize,
+    ) -> (usize, usize) {
+        let (start, end) = route;
+        if removed_idx < start {
+            (start.saturating_sub(1), end.saturating_sub(1))
+        } else if removed_idx < end {
+            (start, end.saturating_sub(1))
+        } else {
+            (start, end)
+        }
+    }
+
+    fn relocate_removal_delta(
+        &self,
+        order_genes: &[u32],
+        route: (usize, usize),
+        src_idx: usize,
+        node: u32,
+    ) -> (f64, f64) {
+        let (route_start, route_end) = route;
+        let prev = if src_idx == route_start {
+            0
+        } else {
+            order_genes[src_idx - 1]
+        };
+        let next = if src_idx + 1 == route_end {
+            0
+        } else {
+            order_genes[src_idx + 1]
+        };
+
+        let prev_to_next = self.edge_costs_or_zero(prev, next);
+        let prev_to_node = self.edge_costs_or_zero(prev, node);
+        let node_to_next = self.edge_costs_or_zero(node, next);
+
+        (
+            prev_to_next.0 - prev_to_node.0 - node_to_next.0,
+            prev_to_next.1 - prev_to_node.1 - node_to_next.1,
+        )
+    }
+
+    fn best_relocate_insert_index(
+        &self,
+        order_after_removal: &[u32],
+        target_route: (usize, usize),
+        node: u32,
+        removal_delta: (f64, f64),
+    ) -> usize {
+        let (route_start, route_end) = target_route;
+        let mut candidates: Vec<(usize, (f64, f64))> =
+            Vec::with_capacity(route_end.saturating_sub(route_start) + 1);
+
+        for ins in route_start..=route_end {
+            let prev = if ins == route_start {
+                0
+            } else {
+                order_after_removal[ins - 1]
+            };
+            let next = if ins == route_end {
+                0
+            } else {
+                order_after_removal[ins]
+            };
+
+            let prev_to_next = self.edge_costs_or_zero(prev, next);
+            let prev_to_node = self.edge_costs_or_zero(prev, node);
+            let node_to_next = self.edge_costs_or_zero(node, next);
+
+            let insertion_delta = (
+                prev_to_node.0 + node_to_next.0 - prev_to_next.0,
+                prev_to_node.1 + node_to_next.1 - prev_to_next.1,
+            );
+            let total_delta = (
+                removal_delta.0 + insertion_delta.0,
+                removal_delta.1 + insertion_delta.1,
+            );
+            candidates.push((ins, total_delta));
+        }
+
+        if candidates.len() == 1 {
+            return candidates[0].0;
+        }
+
+        let min0 = candidates
+            .iter()
+            .map(|(_, delta)| delta.0)
+            .fold(f64::INFINITY, f64::min);
+        let max0 = candidates
+            .iter()
+            .map(|(_, delta)| delta.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min1 = candidates
+            .iter()
+            .map(|(_, delta)| delta.1)
+            .fold(f64::INFINITY, f64::min);
+        let max1 = candidates
+            .iter()
+            .map(|(_, delta)| delta.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let range0 = max0 - min0;
+        let range1 = max1 - min1;
+
+        let mut best_index = candidates[0].0;
+        let mut best_score = f64::INFINITY;
+        let mut best_delta = candidates[0].1;
+
+        for (ins, delta) in candidates {
+            // Minimizing normalized total delta is equivalent to maximizing normalized improvement.
+            let norm0 = if range0 > 0.0 {
+                (delta.0 - min0) / range0
+            } else {
+                0.0
+            };
+            let norm1 = if range1 > 0.0 {
+                (delta.1 - min1) / range1
+            } else {
+                0.0
+            };
+            let score = norm0 + norm1;
+
+            let is_better = score < best_score
+                || (score == best_score
+                    && (delta.0 < best_delta.0
+                        || (delta.0 == best_delta.0
+                            && (delta.1 < best_delta.1
+                                || (delta.1 == best_delta.1 && ins < best_index)))));
+
+            if is_better {
+                best_score = score;
+                best_delta = delta;
+                best_index = ins;
+            }
+        }
+
+        best_index
+    }
+
+    fn best_insert_position_in_route(&self, route: &[u32], node: u32) -> usize {
+        let mut candidates: Vec<(usize, (f64, f64))> = Vec::with_capacity(route.len() + 1);
+
+        for ins in 0..=route.len() {
+            let prev = if ins == 0 { 0 } else { route[ins - 1] };
+            let next = if ins == route.len() { 0 } else { route[ins] };
+
+            let prev_to_next = self.edge_costs_or_zero(prev, next);
+            let prev_to_node = self.edge_costs_or_zero(prev, node);
+            let node_to_next = self.edge_costs_or_zero(node, next);
+
+            let delta = (
+                prev_to_node.0 + node_to_next.0 - prev_to_next.0,
+                prev_to_node.1 + node_to_next.1 - prev_to_next.1,
+            );
+            candidates.push((ins, delta));
+        }
+
+        if candidates.len() == 1 {
+            return 0;
+        }
+
+        let min0 = candidates
+            .iter()
+            .map(|(_, delta)| delta.0)
+            .fold(f64::INFINITY, f64::min);
+        let max0 = candidates
+            .iter()
+            .map(|(_, delta)| delta.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min1 = candidates
+            .iter()
+            .map(|(_, delta)| delta.1)
+            .fold(f64::INFINITY, f64::min);
+        let max1 = candidates
+            .iter()
+            .map(|(_, delta)| delta.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let range0 = max0 - min0;
+        let range1 = max1 - min1;
+
+        let mut best_index = 0usize;
+        let mut best_score = f64::INFINITY;
+        let mut best_delta = candidates[0].1;
+
+        for (ins, delta) in candidates {
+            let norm0 = if range0 > 0.0 {
+                (delta.0 - min0) / range0
+            } else {
+                0.0
+            };
+            let norm1 = if range1 > 0.0 {
+                (delta.1 - min1) / range1
+            } else {
+                0.0
+            };
+            let score = norm0 + norm1;
+
+            let is_better = score < best_score
+                || (score == best_score
+                    && (delta.0 < best_delta.0
+                        || (delta.0 == best_delta.0
+                            && (delta.1 < best_delta.1
+                                || (delta.1 == best_delta.1 && ins < best_index)))));
+
+            if is_better {
+                best_score = score;
+                best_delta = delta;
+                best_index = ins;
+            }
+        }
+
+        best_index
     }
 
     fn build_parent_info(&self, order: &[u32]) -> Option<ParentInfo> {
@@ -923,20 +1249,22 @@ impl NSGA {
             let src_r = rng.random_range(0..splits.len());
             let (src_s, src_e) = splits[src_r];
             let src_idx = rng.random_range(src_s..src_e);
+            let removal_delta = self.relocate_removal_delta(v, (src_s, src_e), src_idx, v[src_idx]);
             let node = v.remove(src_idx);
 
             // pick a target route (possibly same)
             let tgt_r = rng.random_range(0..splits.len());
-            let (tgt_s, tgt_e) = splits[tgt_r];
-            // insertion position is allowed at end (tgt_e)
-            let mut ins = rng.random_range(tgt_s..=tgt_e);
-            // account for the removal shifting indices
-            if src_idx < ins {
-                ins = ins.saturating_sub(1);
-            }
-            if ins > v.len() {
-                ins = v.len();
-            }
+            let (tgt_s, tgt_e) = self.adjusted_route_bounds_after_removal(splits[tgt_r], src_idx);
+
+            let ins = match self.relocate_mode {
+                RelocateMode::Cheap => {
+                    // insertion position is allowed at the end of the target route
+                    rng.random_range(tgt_s..=tgt_e)
+                }
+                RelocateMode::BestNormalized => {
+                    self.best_relocate_insert_index(v, (tgt_s, tgt_e), node, removal_delta)
+                }
+            };
             v.insert(ins, node);
         } else {
             // Swap two customers (try inter-route if we have >= 2 routes)
@@ -1052,7 +1380,6 @@ impl NSGA {
         Some(set)
     }
 
-
     /// Evaluate a permutation by greedily splitting into capacity-feasible routes and summing edge costs.
     ///
     /// Returns `(f0, f1)` where both are minimized.
@@ -1064,10 +1391,7 @@ impl NSGA {
         let mut total_parameters = (0.0, 0.0);
 
         let add_leg = |from: u32, to: u32, total: &mut (f64, f64)| -> bool {
-            let from_us = from as usize;
-            let to_us = to as usize;
-            let edge_id = self.adjacency_matrix[from_us][to_us][0];
-            let edge_parameters = self.graph.get_edge_parameters(edge_id);
+            let edge_parameters = self.edge_costs_or_zero(from, to);
             total.0 += edge_parameters.0;
             total.1 += edge_parameters.1;
             true
