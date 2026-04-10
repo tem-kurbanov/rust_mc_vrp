@@ -1,6 +1,8 @@
 /target
 /art
 /out
+/tuning_logs
 Cargo.lock
+.codex
 .zed/debug.json
 output.txt

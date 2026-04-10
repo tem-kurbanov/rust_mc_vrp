@@ -24,7 +24,6 @@ use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Directed edge in the complete graph.
 ///
@@ -51,6 +50,7 @@ impl Edge {
         self.target
     }
     /// Returns `(distance, secondary_cost)`.
+    #[allow(dead_code)]
     pub fn get_parameters(&self) -> (f64, f64) {
         self.parameters
     }
@@ -96,7 +96,14 @@ impl Graph {
     /// - Input ids are converted from 1-based to 0-based.
     /// - `NODE_COORD_SECTION` is stored in a dense vector by node id, so ids may be read out of order.
     /// - Only the **first** depot id found is used.
+    #[allow(dead_code)]
     pub fn new(input_path: &str) -> io::Result<Self> {
+        Self::new_with_seed(input_path, 1)
+    }
+
+    /// Parse a TSPLIB-like `.vrp` file and build a complete directed graph using a fixed seed
+    /// for the secondary objective.
+    pub fn new_with_seed(input_path: &str, random_seed: u64) -> io::Result<Self> {
         let num_parameters = 2;
         let file = File::open(input_path)?;
         let reader = BufReader::new(file);
@@ -111,12 +118,7 @@ impl Graph {
         let mut coords_read = 0usize;
 
         let mut section = String::new();
-        // Create RNG with time-based seed
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let mut rng: StdRng = SeedableRng::seed_from_u64(seed);
+        let mut rng: StdRng = SeedableRng::seed_from_u64(random_seed);
 
         while let Some(line) = lines.next() {
             let line = line?;
@@ -293,10 +295,12 @@ impl Graph {
         self.num_nodes
     }
 
+    #[allow(dead_code)]
     pub fn get_num_edges(&self) -> u32 {
         self.num_edges
     }
 
+    #[allow(dead_code)]
     pub fn get_num_parameters(&self) -> u32 {
         self.num_parameters
     }
@@ -319,6 +323,7 @@ impl Graph {
     }
 
     /// Returns `(source, target)` for the given edge id.
+    #[allow(dead_code)]
     pub fn get_edge_points(&self, edge_id: u32) -> (u32, u32) {
         (
             self.edges[edge_id as usize].source,
@@ -331,10 +336,12 @@ impl Graph {
         &self.edges[edge_id as usize].parameters
     }
 
+    #[allow(dead_code)]
     pub fn get_outgoing_edges(&self, node_id: u32) -> &Vec<u32> {
         &self.outgoing_edges[node_id as usize]
     }
 
+    #[allow(dead_code)]
     pub fn get_incoming_edges(&self, node_id: u32) -> &Vec<u32> {
         &self.incoming_edges[node_id as usize]
     }
@@ -342,5 +349,39 @@ impl Graph {
     /// All edges in the complete graph, in creation order.
     pub fn get_edges(&self) -> &Vec<Edge> {
         &self.edges
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Graph;
+
+    #[test]
+    fn graph_secondary_objective_is_seeded() {
+        let graph_a = Graph::new_with_seed("xset/X-n101-k25.vrp", 7).unwrap();
+        let graph_b = Graph::new_with_seed("xset/X-n101-k25.vrp", 7).unwrap();
+        let graph_c = Graph::new_with_seed("xset/X-n101-k25.vrp", 8).unwrap();
+
+        let sample_a: Vec<(f64, f64)> = graph_a
+            .get_edges()
+            .iter()
+            .take(16)
+            .map(|edge| edge.get_parameters())
+            .collect();
+        let sample_b: Vec<(f64, f64)> = graph_b
+            .get_edges()
+            .iter()
+            .take(16)
+            .map(|edge| edge.get_parameters())
+            .collect();
+        let sample_c: Vec<(f64, f64)> = graph_c
+            .get_edges()
+            .iter()
+            .take(16)
+            .map(|edge| edge.get_parameters())
+            .collect();
+
+        assert_eq!(sample_a, sample_b);
+        assert_ne!(sample_a, sample_c);
     }
 }

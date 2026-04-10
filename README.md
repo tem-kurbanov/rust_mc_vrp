@@ -36,6 +36,15 @@ Each individual stores a **permutation of customers** (all nodes except the depo
 Routes are **implicit**: the permutation is split into consecutive segments by greedily packing
 customers until adding the next one would exceed capacity.
 
+## Initial population
+
+The initial population can be generated as a configurable mixture of:
+
+- `random`: random customer permutations
+- `best-insertion`: constructive initialization that repeatedly picks a random unvisited customer,
+  picks a feasible target route randomly (with the option to start a new route), and inserts the
+  customer into the best slot of that route using the combined normalized two-objective local delta
+
 ## Algorithm
 
 - **Selection**: tournament selection with rank + crowding distance (NSGA-II).
@@ -44,6 +53,10 @@ customers until adding the next one would exceed capacity.
   - intra-route 2-opt (segment reversal)
   - relocate (remove one customer and insert elsewhere)
   - swap (prefers inter-route when possible)
+- **Relocate placement modes**:
+  - `cheap`: choose the insertion slot randomly within the chosen target route
+  - `best-normalized`: choose the insertion slot with the best combined normalized
+    two-objective local improvement within the chosen target route
 - **Fitness**: sum of edge costs across all routes (including depot legs).
 - **Convergence**: tracks 2D hypervolume of the archive and stops when it stalls.
 
@@ -95,8 +108,13 @@ Common flags:
 - `--population-size <n>`
 - `--p-crossover <0..1>`
 - `--p-mutation <0..1>`
+- `--relocate-mode <cheap|best-normalized>`
+- `--init-random-pct <0..100>`
+- `--init-best-insertion-pct <0..100>`
 - `--runs <k>`
 - `--output <path>`
+
+The two initialization percentages must sum to `100`.
 
 ## Notes / current limitations
 
