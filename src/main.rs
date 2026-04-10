@@ -1,15 +1,6 @@
 //! Binary entrypoint for `rust_mc_vrp`.
 //!
-//! This crate currently focuses on solving **Capacitated VRP (CVRP)** instances provided in a
-//! TSPLIB-like `.vrp` format (Uchoa et al. X-set style).
-//!
-//! The program:
-//! - parses a `.vrp` instance into an internal complete directed graph with 2 edge parameters
-//!   (distance + random secondary cost),
-//! - runs an NSGA-II style evolutionary search on a permutation encoding of customers,
-//! - logs convergence info and a final nondominated set summary.
-//!
-//! See `README.md` for usage and input format.
+//! Parses a `.vrp` or precomputed graph `.json`, runs NSGA-II, logs progress and final front.
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -18,12 +9,8 @@ use std::process::exit;
 
 use clap::Parser;
 
-// mod complete_graph;
-mod graph;
-mod nsga;
-
-use graph::Graph;
-use nsga::NSGA;
+use rust_mc_vrp::graph::Graph;
+use rust_mc_vrp::nsga::NSGA;
 
 #[derive(Parser)]
 #[command(author, version, about = "Solve CVRP using NSGA-II")]
@@ -35,7 +22,6 @@ struct Config {
     /// Number of individuals in the population.
     #[arg(short, long, default_value = "50")]
     population_size: u32,
-
 
     /// Crossover probability.
     #[arg(long, default_value = "0.5")]
@@ -55,7 +41,6 @@ struct Config {
 }
 
 fn main() {
-    // Parse named command-line flags
     let cfg = Config::parse();
 
     if cfg.runs == 0 {
@@ -63,7 +48,6 @@ fn main() {
         exit(1);
     }
 
-    // Read original graph (.json from data/xset_graphs or legacy .vrp)
     let original_graph = if cfg.graph_path.to_ascii_lowercase().ends_with(".json") {
         match Graph::from_json_path(&cfg.graph_path) {
             Ok(g) => g,
@@ -118,24 +102,23 @@ fn run_experiments<W: Write>(
         writeln!(w, "Graph: {}", cfg.graph_path).ok();
         writeln!(w, "Number of graph nodes: {}", num_nodes).ok();
 
-
+        let run_seed = run_idx as u64;
         writeln!(
             w,
-            "NSGA params: population_size={}, p_crossover={}, p_mutation={}",
-            cfg.population_size, cfg.p_crossover, cfg.p_mutation
+            "NSGA params: population_size={}, p_crossover={}, p_mutation={}, seed={}",
+            cfg.population_size, cfg.p_crossover, cfg.p_mutation, run_seed
         )
         .ok();
 
-        // Create NSGA instance
-        let nsga = NSGA::new(
+        let mut nsga = NSGA::new(
             original_graph.clone(),
             cfg.population_size,
             cfg.p_crossover,
             cfg.p_mutation,
-    );
+            run_seed,
+        );
 
-        // Solve CVRP (solver logs to `w`)
-        let _population = nsga.solve_capacitated_vrp_with_writer(w);
+        let _outcome = nsga.solve_capacitated_vrp_with_writer(w);
         writeln!(w).ok();
     }
 }

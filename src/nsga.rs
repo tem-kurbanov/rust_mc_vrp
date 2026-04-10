@@ -19,7 +19,9 @@
 //! - **Mutation**: route-aware mutation (intra-route 2-opt, relocate, swap).
 
 use rand::Rng;
+use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::io::Write;
@@ -126,6 +128,22 @@ pub struct HvStall {
     history: VecDeque<f64>,
 }
 
+/// Result of one NSGA run (final population + run metadata).
+pub struct NsgaSolveOutcome {
+    pub population: Vec<Chromosome>,
+    pub generations: u32,
+    pub converged_early: bool,
+}
+
+/// One nondominated solution for export (clustering = route index).
+#[derive(Clone, Debug)]
+pub struct ParetoSolutionExport {
+    pub f0: f64,
+    pub f1: f64,
+    /// Each inner vector is one vehicle route: customer **graph** node ids (0-based), visit order.
+    pub routes_customers_0based: Vec<Vec<u32>>,
+}
+
 impl HvStall {
     pub fn new(reference: (f64, f64), window: usize, eps: f64) -> Self {
         assert!(window >= 2);
@@ -169,6 +187,8 @@ pub struct NSGA {
 
     p_crossover: f64,
     p_mutation: f64,
+
+    rng: StdRng,
 }
 
 impl NSGA {
@@ -180,6 +200,7 @@ impl NSGA {
         population_size: u32,
         p_crossover: f64,
         p_mutation: f64,
+        rng_seed: u64,
     ) -> Self {
         let mut id_to_order_index = HashMap::new();
         let mut order_index_to_id = HashMap::new();
@@ -205,18 +226,22 @@ impl NSGA {
             max_capacity,
             p_crossover,
             p_mutation,
+            rng: StdRng::seed_from_u64(rng_seed),
         }
     }
 
     #[allow(dead_code)]
-    pub fn solve_capacitated_vrp(&self) -> Vec<Chromosome> {
+    pub fn solve_capacitated_vrp(&mut self) -> Vec<Chromosome> {
         let stdout = std::io::stdout();
         let mut w = std::io::BufWriter::new(stdout.lock());
-        self.solve_capacitated_vrp_with_writer(&mut w)
+        self.solve_capacitated_vrp_with_writer(&mut w).population
     }
 
     /// Solve the CVRP and stream progress logs to `w`.
-    pub fn solve_capacitated_vrp_with_writer<W: Write>(&self, w: &mut W) -> Vec<Chromosome> {
+    pub fn solve_capacitated_vrp_with_writer<W: Write>(
+        &mut self,
+        w: &mut W,
+    ) -> NsgaSolveOutcome {
         let mut population = self.generate_initial_population();
         let child_population = self.produce_child_population(&population);
         population.extend(child_population);
@@ -233,8 +258,11 @@ impl NSGA {
         );
 
         let mut initial_hv: f64 = 0.0;
+        let mut converged_early = false;
+        let mut generations_completed: u32 = 0;
 
         for generation in 0..num_iterations {
+            generations_completed = generation + 1;
             let fronts = self.sort_population(&mut population);
             self.calculate_crowding_distances(&mut population, &fronts);
 
@@ -265,13 +293,13 @@ impl NSGA {
             if converged {
                 writeln!(w, "Converged at generation {}", generation + 1).ok();
                 population = new_population;
+                converged_early = true;
                 break;
             }
 
             population = new_population;
         }
 
-        // Print the actual nondominated solutions (rank 1) as decoded routes.
         let fronts = self.sort_population(&mut population);
         if let Some(first_front) = fronts.first() {
             // Deduplicate by exact fitness pairs so we don't print repeated solutions.
@@ -323,7 +351,69 @@ impl NSGA {
             }
         }
 
-        population
+        NsgaSolveOutcome {
+            population,
+            generations: generations_completed,
+            converged_early,
+        }
+    }
+
+    /// Rank-1 nondominated chromosomes, unique by exact `(f0,f1)` bit pattern, with routes for labeling.
+    pub fn pareto_unique_exports(&self, population: &[Chromosome]) -> Vec<ParetoSolutionExport> {
+        let mut population_mut = population.to_vec();
+        let fronts = self.sort_population(&mut population_mut);
+        let Some(first_front) = fronts.first() else {
+            return Vec::new();
+        };
+
+        let mut reps: Vec<usize> = first_front.clone();
+        reps.sort_by(|&a, &b| {
+            population_mut[a]
+                .fitness_values
+                .0
+                .total_cmp(&population_mut[b].fitness_values.0)
+                .then_with(|| {
+                    population_mut[a]
+                        .fitness_values
+                        .1
+                        .total_cmp(&population_mut[b].fitness_values.1)
+                })
+        });
+
+        let mut unique: Vec<usize> = Vec::new();
+        let mut last_key: Option<(u64, u64)> = None;
+        for idx in reps {
+            let fv = population_mut[idx].fitness_values;
+            let key = (fv.0.to_bits(), fv.1.to_bits());
+            if last_key == Some(key) {
+                continue;
+            }
+            last_key = Some(key);
+            unique.push(idx);
+        }
+
+        unique
+            .into_iter()
+            .map(|idx| {
+                let ch = &population_mut[idx];
+                ParetoSolutionExport {
+                    f0: ch.fitness_values.0,
+                    f1: ch.fitness_values.1,
+                    routes_customers_0based: self.customer_routes_from_order(&ch.order_genes),
+                }
+            })
+            .collect()
+    }
+
+    /// Vehicle routes as lists of customer node ids (0-based graph ids), visit order within each route.
+    pub fn customer_routes_from_order(&self, order_genes: &[u32]) -> Vec<Vec<u32>> {
+        let Some(splits) = self.route_splits(order_genes) else {
+            return Vec::new();
+        };
+        splits
+            .into_iter()
+            .map(|(s, e)| order_genes[s..e].to_vec())
+            .collect()
     }
 
     fn dominates(a: (f64, f64), b: (f64, f64)) -> bool {
@@ -361,15 +451,14 @@ impl NSGA {
         Self::nondominated_2d(archive);
     }
 
-    fn generate_initial_population(&self) -> Vec<Chromosome> {
+    fn generate_initial_population(&mut self) -> Vec<Chromosome> {
         // Generate random initial population according to the population size
         let mut population = Vec::new();
-        let mut rng = rand::rng();
         for _ in 0..self.population_size {
             // Order node is a random permutation of ids from 1 to num_nodes
             let mut order_genes: Vec<u32> = (1..self.num_nodes as u32).collect();
             // Shuffle the order genes
-            order_genes.shuffle(&mut rng);
+            order_genes.shuffle(&mut self.rng);
 
             // Compute the fitness values
             let fitness_values = self.evaluate(&order_genes);
@@ -385,26 +474,25 @@ impl NSGA {
         population
     }
 
-    fn produce_child_population(&self, parents: &Vec<Chromosome>) -> Vec<Chromosome> {
+    fn produce_child_population(&mut self, parents: &Vec<Chromosome>) -> Vec<Chromosome> {
         let n = self.population_size as usize;
         let mut children = Vec::with_capacity(n);
-        let mut rng = rand::rng();
 
         while children.len() < n {
             let p1 = self.tournament_select(parents);
             let p2 = self.tournament_select(parents);
 
-            let (mut c1, mut c2) = if rng.random_bool(self.p_crossover) {
+            let (mut c1, mut c2) = if self.rng.random_bool(self.p_crossover) {
                 self.crossover(p1, p2) // returns 2 children
             } else {
                 (p1.clone(), p2.clone()) // no crossover
             };
 
             // Mutate each child independently with probability p_mutation
-            if rng.random_bool(self.p_mutation) {
+            if self.rng.random_bool(self.p_mutation) {
                 self.mutate(&mut c1);
             }
-            if rng.random_bool(self.p_mutation) {
+            if self.rng.random_bool(self.p_mutation) {
                 self.mutate(&mut c2);
             }
 
@@ -419,12 +507,11 @@ impl NSGA {
         children
     }
 
-    fn tournament_select<'a>(&self, population: &'a [Chromosome]) -> &'a Chromosome {
-        let mut rng = rand::rng();
+    fn tournament_select<'a>(&mut self, population: &'a [Chromosome]) -> &'a Chromosome {
         let n = population.len();
 
-        let i = rng.random_range(0..n);
-        let j = rng.random_range(0..n);
+        let i = self.rng.random_range(0..n);
+        let j = self.rng.random_range(0..n);
 
         let a = &population[i];
         let b = &population[j];
@@ -444,7 +531,7 @@ impl NSGA {
                 b
             } else {
                 // complete tie → random
-                if rng.random_bool(0.5) { a } else { b }
+                if self.rng.random_bool(0.5) { a } else { b }
             }
         }
     }
@@ -633,7 +720,7 @@ impl NSGA {
     /// Apply crossover to produce two children.
     ///
     /// Uses HGreX in both directions to form two offspring.
-    fn crossover(&self, p1: &Chromosome, p2: &Chromosome) -> (Chromosome, Chromosome) {
+    fn crossover(&mut self, p1: &Chromosome, p2: &Chromosome) -> (Chromosome, Chromosome) {
         // HGreX crossover (edge-based greedy using parent adjacencies, capacity-aware)
         let c1 = self.hgrex(&p1.order_genes, &p2.order_genes);
         let c2 = self.hgrex(&p2.order_genes, &p1.order_genes);
@@ -723,7 +810,7 @@ impl NSGA {
     /// - starting a new route when nothing fits.
     ///
     /// Returns a permutation of all customers (length `num_nodes-1`).
-    fn hgrex(&self, p1: &[u32], p2: &[u32]) -> Vec<u32> {
+    fn hgrex(&mut self, p1: &[u32], p2: &[u32]) -> Vec<u32> {
         let n_customers = self.num_nodes.saturating_sub(1);
         if n_customers == 0 {
             return Vec::new();
@@ -805,14 +892,13 @@ impl NSGA {
         child
     }
 
-    fn ox1<T: Copy + Eq + Hash>(&self, p1: &[T], p2: &[T]) -> Vec<T> {
+    fn ox1<T: Copy + Eq + Hash>(&mut self, p1: &[T], p2: &[T]) -> Vec<T> {
         // Select crossover points
         let n = p1.len();
-        let mut rng = rand::rng();
 
         // two cut points [a, b)
-        let mut a = rng.random_range(0..n);
-        let mut b = rng.random_range(0..n);
+        let mut a = self.rng.random_range(0..n);
+        let mut b = self.rng.random_range(0..n);
         if a > b {
             std::mem::swap(&mut a, &mut b);
         }
@@ -857,7 +943,7 @@ impl NSGA {
     /// - intra-route 2-opt (segment reversal)
     /// - relocate (remove one customer and insert elsewhere)
     /// - swap (prefer inter-route when multiple routes exist)
-    fn mutate(&self, chromosome: &mut Chromosome) {
+    fn mutate(&mut self, chromosome: &mut Chromosome) {
         // Route-aware mutation for CVRP permutation encoding.
         //
         // Your routes are *implicit* (computed by `route_splits()` using capacity), so mutation
@@ -869,13 +955,12 @@ impl NSGA {
         }
 
         let before = v.clone();
-        let mut rng = rand::rng();
 
         // If we cannot compute route splits (should only happen if a demand > capacity),
         // fall back to a simple inversion.
         let Some(splits) = self.route_splits(v) else {
-            let mut i = rng.random_range(0..n);
-            let mut j = rng.random_range(0..n);
+            let mut i = self.rng.random_range(0..n);
+            let mut j = self.rng.random_range(0..n);
             if i > j {
                 std::mem::swap(&mut i, &mut j);
             }
@@ -889,7 +974,7 @@ impl NSGA {
         // - ~55%: intra-route 2-opt (segment reversal)
         // - ~30%: relocate (1-0 insertion), route-aware
         // - ~15%: swap (can be inter-route)
-        let op: u32 = rng.random_range(0..100);
+        let op: u32 = self.rng.random_range(0..100);
 
         if op < 55 {
             // Intra-route inversion (2-opt) within one inferred route
@@ -901,16 +986,16 @@ impl NSGA {
 
             if eligible.is_empty() {
                 // fallback: simple swap
-                let i = rng.random_range(0..n);
-                let mut j = rng.random_range(0..n);
+                let i = self.rng.random_range(0..n);
+                let mut j = self.rng.random_range(0..n);
                 if j == i {
                     j = (j + 1) % n;
                 }
                 v.swap(i, j);
             } else {
-                let (s, e) = eligible[rng.random_range(0..eligible.len())];
-                let mut i = rng.random_range(s..e);
-                let mut j = rng.random_range(s..e);
+                let (s, e) = eligible[self.rng.random_range(0..eligible.len())];
+                let mut i = self.rng.random_range(s..e);
+                let mut j = self.rng.random_range(s..e);
                 if i > j {
                     std::mem::swap(&mut i, &mut j);
                 }
@@ -920,16 +1005,16 @@ impl NSGA {
             }
         } else if op < 85 {
             // Relocate (remove one customer and insert elsewhere), biased by current route splits
-            let src_r = rng.random_range(0..splits.len());
+            let src_r = self.rng.random_range(0..splits.len());
             let (src_s, src_e) = splits[src_r];
-            let src_idx = rng.random_range(src_s..src_e);
+            let src_idx = self.rng.random_range(src_s..src_e);
             let node = v.remove(src_idx);
 
             // pick a target route (possibly same)
-            let tgt_r = rng.random_range(0..splits.len());
+            let tgt_r = self.rng.random_range(0..splits.len());
             let (tgt_s, tgt_e) = splits[tgt_r];
             // insertion position is allowed at end (tgt_e)
-            let mut ins = rng.random_range(tgt_s..=tgt_e);
+            let mut ins = self.rng.random_range(tgt_s..=tgt_e);
             // account for the removal shifting indices
             if src_idx < ins {
                 ins = ins.saturating_sub(1);
@@ -941,19 +1026,19 @@ impl NSGA {
         } else {
             // Swap two customers (try inter-route if we have >= 2 routes)
             if splits.len() >= 2 {
-                let r1 = rng.random_range(0..splits.len());
-                let mut r2 = rng.random_range(0..splits.len());
+                let r1 = self.rng.random_range(0..splits.len());
+                let mut r2 = self.rng.random_range(0..splits.len());
                 if r2 == r1 {
                     r2 = (r2 + 1) % splits.len();
                 }
                 let (s1, e1) = splits[r1];
                 let (s2, e2) = splits[r2];
-                let i = rng.random_range(s1..e1);
-                let j = rng.random_range(s2..e2);
+                let i = self.rng.random_range(s1..e1);
+                let j = self.rng.random_range(s2..e2);
                 v.swap(i, j);
             } else {
-                let i = rng.random_range(0..n);
-                let mut j = rng.random_range(0..n);
+                let i = self.rng.random_range(0..n);
+                let mut j = self.rng.random_range(0..n);
                 if j == i {
                     j = (j + 1) % n;
                 }
